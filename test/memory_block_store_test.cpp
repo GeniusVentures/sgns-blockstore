@@ -51,22 +51,22 @@ namespace
             reinterpret_cast<const uint8_t*>(s.data()), s.size());
     }
 
+    Cid MakeCid(const std::string& payload)
+    {
+        return CidOf(SpanOf(payload), MulticodecType::Code::RAW).value();
+    }
+
+    // NOTE: ContentIdentifier has no default constructor, so the CID
+    // members carry member-initializers (fixture must stay default-
+    // constructible for TEST_F).
     class MemoryBlockStoreTest : public ::testing::Test
     {
     public:
-        void SetUp() override
-        {
-            payload_a_ = "block a payload";
-            payload_b_ = "block b payload - different length";
-            cid_a_ = CidOf(SpanOf(payload_a_), MulticodecType::Code::RAW).value();
-            cid_b_ = CidOf(SpanOf(payload_b_), MulticodecType::Code::RAW).value();
-        }
-
         std::shared_ptr<MemoryBlockStore> store_{std::make_shared<MemoryBlockStore>()};
-        std::string payload_a_;
-        std::string payload_b_;
-        Cid cid_a_;
-        Cid cid_b_;
+        std::string payload_a_ = "block a payload";
+        std::string payload_b_ = "block b payload - different length";
+        Cid cid_a_ = MakeCid(payload_a_);
+        Cid cid_b_ = MakeCid(payload_b_);
     };
 
     Cid Blake2bCid()
@@ -113,8 +113,8 @@ TEST_F(MemoryBlockStoreTest, IdenticalRePutMerges)
     EXPECT_TRUE(res.value().alreadyPresent);
     auto got = store_->Get(cid_a_);
     ASSERT_TRUE(got);
-    EXPECT_EQ(got.value().bytes, std::vector<uint8_t>(SpanOf(payload_a_).begin(),
-                                                      SpanOf(payload_a_).end()));
+    EXPECT_EQ(got.value().bytes,
+              std::vector<uint8_t>(payload_a_.begin(), payload_a_.end()));
 }
 
 /**
@@ -195,11 +195,11 @@ TEST_F(MemoryBlockStoreTest, GetSizeReportsExactByteCount)
 TEST_F(MemoryBlockStoreTest, Blake2bCidThrowsInvalidArgument)
 {
     const Cid bad = Blake2bCid();
-    EXPECT_THROW(store_->Put(bad, SpanOf(payload_a_)), std::invalid_argument);
-    EXPECT_THROW(store_->Get(bad), std::invalid_argument);
+    EXPECT_THROW((void)store_->Put(bad, SpanOf(payload_a_)), std::invalid_argument);
+    EXPECT_THROW((void)store_->Get(bad), std::invalid_argument);
+    EXPECT_THROW((void)store_->Has(bad), std::invalid_argument);
     const BlockInput batch[] = {{bad, SpanOf(payload_a_)}};
-    EXPECT_THROW(store_->PutMany(batch), std::invalid_argument);
-    EXPECT_FALSE(store_->Has(bad).value());
+    EXPECT_THROW((void)store_->PutMany(batch), std::invalid_argument);
 }
 
 /**
@@ -341,7 +341,7 @@ TEST_F(MemoryBlockStoreTest, PutManyBlake2bThrowsAndWritesNothing)
         {cid_a_, SpanOf(payload_a_)},
         {Blake2bCid(), SpanOf(payload_b_)},
     };
-    EXPECT_THROW(store_->PutMany(batch), std::invalid_argument);
+    EXPECT_THROW((void)store_->PutMany(batch), std::invalid_argument);
     EXPECT_FALSE(store_->Has(cid_a_).value()); // nothing written
 }
 

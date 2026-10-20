@@ -1,6 +1,7 @@
 add_library(sgns-blockstore STATIC
     Cid.cpp
     ContractHeaders.cpp
+    MemoryBlockStore.cpp
 )
 
 target_link_libraries(sgns-blockstore

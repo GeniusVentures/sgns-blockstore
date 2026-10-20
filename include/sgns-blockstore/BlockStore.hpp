@@ -72,7 +72,7 @@ namespace sgns::blockstore
          *         BlockStatus failure (Corrupt+Caller on verification
          *         mismatch)
          */
-        virtual outcome::result<PutOutcome, BlockStatus> Put(
+        virtual result<PutOutcome, BlockStatus> Put(
             const Cid& cid, gsl::span<const uint8_t> bytes,
             const WriteOptions& options = {})
             = 0;
@@ -85,7 +85,7 @@ namespace sgns::blockstore
          * @return the verified Block, or BlockStatus failure (NotFound is
          *         an authoritative miss ONLY)
          */
-        virtual outcome::result<Block, BlockStatus> Get(
+        virtual result<Block, BlockStatus> Get(
             const Cid& cid, const ReadOptions& options = {})
             = 0;
 
@@ -96,7 +96,7 @@ namespace sgns::blockstore
          *         failure a BlockStatus FAILURE is returned - NEVER the
          *         value false (CORE-02 non-conflation)
          */
-        virtual outcome::result<bool, BlockStatus> Has(const Cid& cid) = 0;
+        virtual result<bool, BlockStatus> Has(const Cid& cid) = 0;
 
         /**
          * @brief Report the stored byte count of a CID.
@@ -104,7 +104,7 @@ namespace sgns::blockstore
          * @return the exact stored byte count (no bytes are returned, so
          *         no verification applies), or BlockStatus failure
          */
-        virtual outcome::result<uint64_t, BlockStatus> GetSize(const Cid& cid) = 0;
+        virtual result<uint64_t, BlockStatus> GetSize(const Cid& cid) = 0;
 
         /**
          * @brief Store a batch of blocks with per-element results.
@@ -115,8 +115,8 @@ namespace sgns::blockstore
          *         failure for wholesale malfunction that prevents
          *         per-block reporting
          */
-        virtual outcome::result<std::vector<outcome::result<PutOutcome, BlockStatus>>,
-                                BlockStatus>
+        virtual result<std::vector<result<PutOutcome, BlockStatus>>,
+                       BlockStatus>
             PutMany(gsl::span<const BlockInput> blocks,
                     const WriteOptions& options = {})
             = 0;

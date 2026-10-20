@@ -23,6 +23,20 @@ namespace sgns::blockstore
     namespace outcome = libp2p::outcome;
 
     /**
+     * @brief The result envelope for BlockStatus-typed failures (D-01).
+     *
+     * Deliberate policy deviation from the libp2p default alias:
+     * BlockStatus is a plain struct, so boost's default policy resolves to
+     * exception_ptr_rethrow observers that cannot instantiate for it (no
+     * std::exception_ptr construction exists). policy::terminate keeps
+     * .value()/.error() semantics identical for correctly-checked code and
+     * fails fast on unchecked access instead.
+     */
+    template <class R, class S = std::error_code,
+              class NoValuePolicy = libp2p::outcome::policy::terminate>
+    using result = libp2p::outcome::basic_result<R, S, NoValuePolicy>;
+
+    /**
      * @brief The one CID definition used across the library and its consumers.
      *
      * Direct alias of the libp2p CID (decision D-05): one CID type everywhere,

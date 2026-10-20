@@ -47,7 +47,7 @@ namespace sgns::blockstore
          * @return success when iteration completed, or the BlockStatus
          *         failure that aborted it
          */
-        virtual outcome::result<void, BlockStatus> ForEach(
+        virtual result<void, BlockStatus> ForEach(
             const std::function<void(const Cid&, gsl::span<const uint8_t>)>& visitor)
             = 0;
     };
