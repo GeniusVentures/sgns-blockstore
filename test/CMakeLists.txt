@@ -10,3 +10,4 @@ target_link_libraries(cid_spike_test
     sgns-blockstore
     p2p::p2p_cid
 )
+target_include_directories(memory_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)

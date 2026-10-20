@@ -27,6 +27,8 @@
 
 #include <libp2p/multi/multihash.hpp>
 
+#include "BlockStoreConformanceTests.hpp"
+
 namespace
 {
     using sgns::blockstore::Block;
@@ -373,3 +375,15 @@ TEST_F(MemoryBlockStoreTest, FaultControllerProbeSucceeds)
     ASSERT_NE(probed, nullptr);
     EXPECT_EQ(probed->GetFault(), FaultKind::None);
 }
+
+// Plan-03 kit instantiation (the marker from Plan 02): one macro line per
+// suite; two distinct suite names prove coexistence in one binary.
+SGNS_BLOCKSTORE_CONFORMANCE_TESTS(
+    MemoryBlockStoreConformance,
+    [] { return std::shared_ptr<sgns::blockstore::BlockStore>(
+        std::make_shared<sgns::blockstore::MemoryBlockStore>()); })
+
+SGNS_BLOCKSTORE_CONFORMANCE_TESTS(
+    MemoryBlockStoreConformanceRepeat,
+    [] { return std::shared_ptr<sgns::blockstore::BlockStore>(
+        std::make_shared<sgns::blockstore::MemoryBlockStore>()); })
