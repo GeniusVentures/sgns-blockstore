@@ -1,4 +1,7 @@
-add_library(sgns-blockstore STATIC Cid.cpp)
+add_library(sgns-blockstore STATIC
+    Cid.cpp
+    ContractHeaders.cpp
+)
 
 target_link_libraries(sgns-blockstore
     PUBLIC p2p::p2p_cid
