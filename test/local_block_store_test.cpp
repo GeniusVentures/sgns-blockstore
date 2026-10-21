@@ -30,6 +30,8 @@
 #include <sgns-blockstore/FaultController.hpp>
 #include <sgns-blockstore/LocalBlockStore.hpp>
 
+#include "BlockStoreConformanceTests.hpp"
+
 namespace
 {
     using sgns::blockstore::BlockSource;
@@ -499,3 +501,119 @@ TEST_F(LocalBlockStoreTest, TransitionsRespectEntryGates)
     store_->SetFault(FaultKind::None);
     ASSERT_TRUE(store_->MarkUploadedDurable(cid_a_)); // clears non-stickily
 }
+
+// ===================================================================
+// EvictLocal (Plan 02-02, D-10): unconditional, idempotent, caller-owned
+// local removal of block bytes + journal record.
+// ===================================================================
+
+/**
+ * @given a pending block
+ * @when EvictLocal removes it
+ * @then Has is false (success value), Get is NotFound, GetUploadState is
+ *        NotFound (journal co-removed), and the pending set is empty -
+ *        ONE batch removed both CF entries
+ */
+TEST_F(LocalBlockStoreTest, EvictLocalRemovesBlockAndJournalRecord)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->EvictLocal(cid_a_));
+    auto has = store_->Has(cid_a_);
+    ASSERT_TRUE(has);
+    EXPECT_FALSE(has.value());
+    auto got = store_->Get(cid_a_);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, StatusClass::NotFound);
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_FALSE(state);
+    EXPECT_EQ(state.error().code, StatusClass::NotFound);
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    EXPECT_TRUE(pending.value().empty());
+}
+
+/**
+ * @given a CID already evicted (no local bytes remain)
+ * @when EvictLocal runs again
+ * @then it SUCCEEDS - idempotent: the desired post-state already holds
+ */
+TEST_F(LocalBlockStoreTest, EvictLocalIsIdempotent)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->EvictLocal(cid_a_));
+    EXPECT_TRUE(store_->EvictLocal(cid_a_)); // idempotent
+}
+
+/**
+ * @given a block marked UploadedDurable
+ * @when EvictLocal removes it
+ * @then BOTH the block bytes and the journal record are gone regardless
+ *        of journal state - eviction is unconditional (D-10): the
+ *        caller owns eviction policy, the method never consults
+ *        durability
+ */
+TEST_F(LocalBlockStoreTest, EvictLocalIgnoresJournalState)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->MarkUploadedDurable(cid_a_));
+    ASSERT_TRUE(store_->EvictLocal(cid_a_));
+    auto got = store_->Get(cid_a_);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, StatusClass::NotFound);
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_FALSE(state);
+    EXPECT_EQ(state.error().code, StatusClass::NotFound);
+}
+
+/**
+ * @given an evicted CID
+ * @when the same block is Put again
+ * @then the re-Put succeeds with alreadyPresent == false - eviction
+ *        genuinely cleared both CF entries, and the journal record is
+ *        re-born as PendingUpload in the same batch
+ */
+TEST_F(LocalBlockStoreTest, RePutAfterEvictRepairs)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->MarkUploadedDurable(cid_a_));
+    ASSERT_TRUE(store_->EvictLocal(cid_a_));
+    auto re_put = store_->Put(cid_a_, SpanOf(payload_a_));
+    ASSERT_TRUE(re_put);
+    EXPECT_FALSE(re_put.value().alreadyPresent);
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::PendingUpload); // re-born
+    auto got = store_->Get(cid_a_);
+    ASSERT_TRUE(got);
+}
+
+// Phase-1 conformance kit instantiation (SC 2, BACK-02/D-09): the
+// factory runs PER CASE, so every case gets a FRESH unique directory
+// (Pitfall 4 - LOCK contention and cross-case leakage are impossible).
+// Open failure is ADD_FAILURE + nullptr, NEVER .value() on the
+// terminate-policy envelope.
+std::shared_ptr<sgns::blockstore::BlockStore> MakeFreshLocalStore()
+{
+    static std::atomic<uint64_t> next{0};
+    const auto dir = "test-data/local-blockstore/kit-case-"
+                   + std::to_string(next.fetch_add(1));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    auto opened = sgns::blockstore::LocalBlockStore::Open(
+        sgns::blockstore::LocalBlockStoreOptions{dir});
+    if (!opened)
+    {
+        ADD_FAILURE() << "LocalBlockStore::Open failed for " << dir
+                      << ": " << opened.error().message;
+        return nullptr;
+    }
+    return std::shared_ptr<sgns::blockstore::LocalBlockStore>(
+        std::move(opened.value()));
+}
+
+SGNS_BLOCKSTORE_CONFORMANCE_TESTS(LocalBlockStoreConformance,
+                                  MakeFreshLocalStore)

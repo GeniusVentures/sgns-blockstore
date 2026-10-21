@@ -165,6 +165,8 @@ static_assert(!HasEvictLocal<sgns::blockstore::BlockStore>::value,
               "D-16 violation: EvictLocal must not exist on BlockStore");
 static_assert(HasEvictLocal<sgns::blockstore::MemoryBlockStore>::value,
               "D-16 violation: MemoryBlockStore must expose EvictLocal");
+static_assert(HasEvictLocal<sgns::blockstore::LocalBlockStore>::value,
+              "D-16 violation: LocalBlockStore must expose EvictLocal");
 
 // CORE-06 structural separation: the tooling/enumeration interface is not
 // a base of the data-path interface.
