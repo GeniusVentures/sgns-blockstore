@@ -32,6 +32,15 @@
 // sgns-blockstore + p2p::p2p_cid - compiling and running it proves the
 // pimpl kept every installed header standalone-compilable with zero
 // RocksDB exposure on the consumer's compile/link line.
+//
+// LOAD-BEARING since Phase 3 (03-01): minio-cpp is now linked PRIVATE
+// into the static library. This TU compiling and running against exactly
+// sgns-blockstore + p2p::p2p_cid - with the miniocpp SDK inside the lib -
+// IS the SC2 no-SDK-type-in-installed-surface proof: any minio type
+// leaking into an installed header would break this TU's standalone
+// compile (header_hygiene's "minio" include ban is the complementary
+// static check). The S3Client seam itself stays internal (D-04); its
+// dedicated guards land with 03-03.
 #include <sgns-blockstore/Cid.hpp>
 #include <sgns-blockstore/BlockStatus.hpp>
 #include <sgns-blockstore/Block.hpp>
