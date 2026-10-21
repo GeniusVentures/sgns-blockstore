@@ -25,7 +25,13 @@
 #include <memory>
 #include <type_traits>
 
-// (a) include-everything: all ten public headers, dependency order.
+// (a) include-everything: all eleven public headers, dependency order.
+// sgns-blockstore now carries a TRANSITIVE consumer dependency on RocksDB
+// (resolved through its package config's find_dependency + the PUBLIC
+// RocksDB::rocksdb link edge); this TU still links exactly
+// sgns-blockstore + p2p::p2p_cid - compiling and running it proves the
+// pimpl kept every installed header standalone-compilable with zero
+// RocksDB exposure on the consumer's compile/link line.
 #include <sgns-blockstore/Cid.hpp>
 #include <sgns-blockstore/BlockStatus.hpp>
 #include <sgns-blockstore/Block.hpp>
@@ -36,6 +42,7 @@
 #include <sgns-blockstore/BlockStoreTooling.hpp>
 #include <sgns-blockstore/FaultController.hpp>
 #include <sgns-blockstore/MemoryBlockStore.hpp>
+#include <sgns-blockstore/LocalBlockStore.hpp>
 
 namespace
 {

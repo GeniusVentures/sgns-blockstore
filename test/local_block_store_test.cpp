@@ -218,3 +218,88 @@ TEST_F(LocalBlockStoreTest, PutMismatchedBytesRejectedCorruptCaller)
     ASSERT_TRUE(pending);
     EXPECT_TRUE(pending.value().empty()); // no orphan journal record
 }
+
+/**
+ * @given fault Unavailable injected
+ * @when Put and Get run
+ * @then both FAIL TemporarilyUnavailable with source Local - the fault
+ *        gate returns BEFORE RocksDB is touched (the gate precedes every
+ *        db_ access, so no directory content change is needed to prove
+ *        the ordering) - and after SetFault(None) the identical calls
+ *        succeed (no sticky negative cache)
+ */
+TEST_F(LocalBlockStoreTest, FaultUnavailableSurfacesTemporarilyUnavailableBeforeStorage)
+{
+    ASSERT_NE(store_, nullptr);
+    store_->SetFault(FaultKind::Unavailable);
+    auto put = store_->Put(cid_a_, SpanOf(payload_a_));
+    ASSERT_FALSE(put);
+    EXPECT_EQ(put.error().code, StatusClass::TemporarilyUnavailable);
+    EXPECT_EQ(put.error().source, BlockSource::Local);
+    auto got = store_->Get(cid_a_);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+    EXPECT_EQ(got.error().source, BlockSource::Local);
+
+    store_->SetFault(FaultKind::None);
+    EXPECT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_))); // same CID succeeds
+    EXPECT_TRUE(store_->Get(cid_a_));
+}
+
+/**
+ * @given fault Unauthorized injected
+ * @when Put and Get run
+ * @then both FAIL Unauthorized with source Local - never NotFound,
+ *        never TemporarilyUnavailable (the taxonomy's fourth class is
+ *        distinct) - and after SetFault(None) the identical calls
+ *        succeed (non-sticky)
+ */
+TEST_F(LocalBlockStoreTest, FaultUnauthorizedSurfacesUnauthorized)
+{
+    ASSERT_NE(store_, nullptr);
+    store_->SetFault(FaultKind::Unauthorized);
+    auto put = store_->Put(cid_a_, SpanOf(payload_a_));
+    ASSERT_FALSE(put);
+    EXPECT_EQ(put.error().code, StatusClass::Unauthorized);
+    EXPECT_EQ(put.error().source, BlockSource::Local);
+    auto got = store_->Get(cid_a_);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, StatusClass::Unauthorized);
+    EXPECT_EQ(got.error().source, BlockSource::Local);
+    EXPECT_NE(got.error().code, StatusClass::NotFound);
+    EXPECT_NE(got.error().code, StatusClass::TemporarilyUnavailable);
+
+    store_->SetFault(FaultKind::None);
+    EXPECT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    EXPECT_TRUE(store_->Get(cid_a_));
+}
+
+/**
+ * @given a stored block and fault CorruptData injected
+ * @when Get fetches it, then the fault is cleared and Get runs again
+ * @then the first Get FAILS Corrupt with source Local (the seam flipped
+ *        a byte on the returned COPY only), and the second Get SUCCEEDS
+ *        with the ORIGINAL bytes - the stored bytes were never touched
+ *        and NOTHING was evicted (non-sticky, exactly the kit case that
+ *        would break if eviction fired on the fault path)
+ */
+TEST_F(LocalBlockStoreTest, FaultCorruptDataCorruptsReturnedCopyNotStorage)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    store_->SetFault(FaultKind::CorruptData);
+    auto res = store_->Get(cid_a_);
+    ASSERT_FALSE(res);
+    EXPECT_EQ(res.error().code, StatusClass::Corrupt);
+    EXPECT_EQ(res.error().source, BlockSource::Local);
+    EXPECT_FALSE(res.error().message.empty());
+
+    store_->SetFault(FaultKind::None);
+    auto clean = store_->Get(cid_a_);
+    ASSERT_TRUE(clean); // cleared fault -> intact: no eviction ever fired
+    EXPECT_EQ(clean.value().bytes,
+              std::vector<uint8_t>(payload_a_.begin(), payload_a_.end()));
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u); // journal record untouched too
+}
