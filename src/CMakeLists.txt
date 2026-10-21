@@ -4,6 +4,7 @@ add_library(sgns-blockstore STATIC
     InMemoryS3Client.cpp
     LocalBlockStore.cpp
     MemoryBlockStore.cpp
+    MinioS3Client.cpp
 )
 
 target_link_libraries(sgns-blockstore
