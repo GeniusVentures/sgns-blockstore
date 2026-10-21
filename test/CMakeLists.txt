@@ -35,6 +35,13 @@ target_link_libraries(api_hygiene_test
     p2p::p2p_cid
 )
 
+# In-process self-signed cert generation in MinioServerHarness (G-3-1):
+# explicit OpenSSL::Crypto on every target compiling the harness - never
+# miniocpp's transitive surface. Resolution is deterministic: the
+# superbuild injects OPENSSL_ROOT_DIR / OPENSSL_USE_STATIC_LIBS /
+# OPENSSL_MSVC_STATIC_RT into this sub-build via its openssl cache args.
+find_package(OpenSSL REQUIRED)
+
 # D-11 day-one spike (Phase 3): hermetic wire-evidence tests against the
 # raw-socket loopback stub, plus the env-gated MinIO-binary TLS smoke
 # (D-06/D-07/D-09 - runtime-skipped, never a CMake gate).
@@ -47,6 +54,7 @@ target_link_libraries(minio_cpp_spike_test
     sgns-blockstore
     p2p::p2p_cid
     miniocpp::miniocpp
+    OpenSSL::Crypto
 )
 if(WIN32)
     # Raw-socket stub + harness health probe (WinSock).
@@ -78,6 +86,7 @@ target_link_libraries(minio_s3_client_test
     sgns-blockstore
     p2p::p2p_cid
     miniocpp::miniocpp
+    OpenSSL::Crypto
 )
 if(WIN32)
     # Stub + harness sockets (WinSock).

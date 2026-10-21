@@ -17,6 +17,14 @@
 #include <miniocpp/client.h>
 #include <miniocpp/providers.h>
 
+#include <openssl/asn1.h>
+#include <openssl/bio.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+
 #ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -162,65 +170,6 @@ namespace
         return false;
     }
 
-    /// @brief Resolve an openssl binary: SGNS_BLOCKSTORE_TEST_OPENSSL_BIN,
-    ///        else the superbuild's openssl install prefix (relative to this
-    ///        test binary, .../<superbuild>/openssl), else PATH lookup.
-    std::string ResolveOpenssl()
-    {
-        if (const char* env = std::getenv("SGNS_BLOCKSTORE_TEST_OPENSSL_BIN"))
-        {
-            if (std::filesystem::exists(env))
-            {
-                return env;
-            }
-        }
-        namespace fs = std::filesystem;
-        // Superbuild openssl install prefix relative to the ctest working
-        // directory (.../<superbuild>/sgns-blockstore/src/sgns-blockstore-build/test):
-        // ../../../../../openssl/bin/openssl[.exe]
-        const fs::path superbuild_candidate = fs::path(
-            "../../../../../openssl/bin/openssl"
-#ifdef _WIN32
-            ".exe"
-#endif
-        );
-        std::error_code ec;
-        if (fs::exists(superbuild_candidate, ec))
-        {
-            return fs::absolute(superbuild_candidate, ec).string();
-        }
-        return std::string();
-    }
-
-    /// @brief Generate a self-signed cert/key pair for the TLS-on smoke (Q2).
-    bool GenerateSelfSignedCert(const std::string& openssl_bin,
-                                const std::string& certs_dir,
-                                std::string* error)
-    {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        fs::create_directories(certs_dir, ec);
-        const fs::path key = fs::path(certs_dir) / "private.key";
-        const fs::path crt = fs::path(certs_dir) / "public.crt";
-        const std::string command = "\"" + openssl_bin + "\" req -x509 -newkey "
-            "rsa:2048 -nodes -days 1 "
-            "-subj \"/CN=127.0.0.1\" "
-            "-addext \"subjectAltName=IP:127.0.0.1\" "
-            "-keyout \"" + key.string() + "\" "
-            "-out \"" + crt.string() + "\" 2>nul";
-        const int exit_code = std::system(command.c_str());
-        if (exit_code != 0 || !fs::exists(key, ec) || !fs::exists(crt, ec))
-        {
-            if (error != nullptr)
-            {
-                *error = "openssl cert generation failed (exit "
-                       + std::to_string(exit_code) + ")";
-            }
-            return false;
-        }
-        return true;
-    }
-
 #ifdef _WIN32
     /// @brief Spawn a detached child with the current environment (the
     ///        per-run random MINIO_ROOT_* values were set before the call).
@@ -294,6 +243,163 @@ namespace sgns::blockstore::testsupport
         return env != nullptr ? std::string(env) : std::string();
     }
 
+    bool MinioServerHarness::GenerateSelfSignedCert(
+        const std::string& certs_dir, std::string* error)
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        fs::create_directories(certs_dir, ec);
+        const fs::path key_path = fs::path(certs_dir) / "private.key";
+        const fs::path crt_path = fs::path(certs_dir) / "public.crt";
+
+        // One OpenSSL error pop per failure path; the fallback covers
+        // branches where the error queue is empty (the failure is ours,
+        // not OpenSSL's).
+        const auto Fail = [error](const char* fallback) {
+            if (error != nullptr)
+            {
+                const char* reason =
+                    ERR_reason_error_string(ERR_get_error());
+                *error = std::string("cert generation failed: ")
+                    + (reason != nullptr ? reason : fallback);
+            }
+            return false;
+        };
+
+        // Ephemeral RSA-2048 pair from the CSPRNG; per-run, protecting
+        // only the loopback server (threat T-3-07).
+        EVP_PKEY* pkey = EVP_RSA_gen(2048);
+        if (pkey == nullptr)
+        {
+            return Fail("RSA key generation failed");
+        }
+        X509* certificate = X509_new();
+        if (certificate == nullptr)
+        {
+            EVP_PKEY_free(pkey);
+            return Fail("X509 allocation failed");
+        }
+
+        bool ok = X509_set_version(certificate, 2) == 1; // X509 v3
+        if (ok)
+        {
+            // Random positive serial (CSPRNG bytes; std::random_device
+            // already drives the per-run credentials above).
+            uint64_t serial = 0;
+            for (int i = 0; i < 8; ++i)
+            {
+                serial = (serial << 8)
+                    | (std::random_device{}() & 0xFF);
+            }
+            serial &= 0x7FFFFFFFFFFFFFFFULL; // positive (sign bit clear)
+            serial |= 1ULL;                  // non-zero
+            ok = ASN1_INTEGER_set_uint64(
+                     X509_get_serialNumber(certificate), serial)
+                == 1;
+        }
+        // 5-minute clock-skew margin back-dating; ~1-day validity
+        // (matches the old "-days 1" fixture).
+        ok = ok
+            && X509_gmtime_adj(X509_getm_notBefore(certificate), -300)
+                != nullptr;
+        ok = ok
+            && X509_gmtime_adj(X509_getm_notAfter(certificate), 24 * 3600)
+                != nullptr;
+        if (ok)
+        {
+            // Self-signed: subject and issuer are the same name.
+            X509_NAME* name = X509_get_subject_name(certificate);
+            ok = X509_NAME_add_entry_by_txt(
+                     name, "CN", MBSTRING_ASC,
+                     reinterpret_cast<const unsigned char*>("127.0.0.1"),
+                     -1, -1, 0)
+                    == 1
+                && X509_set_issuer_name(certificate, name) == 1
+                && X509_set_pubkey(certificate, pkey) == 1;
+        }
+        if (ok)
+        {
+            // SAN IP:127.0.0.1 (the harness endpoint address).
+            X509V3_CTX context{};
+            X509V3_set_ctx(&context, nullptr, certificate, nullptr,
+                           nullptr, 0);
+            X509_EXTENSION* extension = X509V3_EXT_conf_nid(
+                nullptr, &context, NID_subject_alt_name, "IP:127.0.0.1");
+            if (extension != nullptr)
+            {
+                ok = X509_add_ext(certificate, extension, -1) == 1;
+                X509_EXTENSION_free(extension);
+            }
+            else
+            {
+                ok = false;
+            }
+        }
+        if (ok)
+        {
+            ok = X509_sign(certificate, pkey, EVP_sha256()) > 0;
+        }
+
+        if (ok)
+        {
+            BIO* key_bio = BIO_new_file(key_path.string().c_str(), "wb");
+            if (key_bio != nullptr)
+            {
+                ok = PEM_write_bio_PrivateKey(key_bio, pkey, nullptr,
+                                              nullptr, 0, nullptr,
+                                              nullptr)
+                    == 1;
+                BIO_free(key_bio);
+            }
+            else
+            {
+                ok = false;
+            }
+        }
+        if (ok)
+        {
+            BIO* crt_bio = BIO_new_file(crt_path.string().c_str(), "wb");
+            if (crt_bio != nullptr)
+            {
+                ok = PEM_write_bio_X509(crt_bio, certificate) == 1;
+                BIO_free(crt_bio);
+            }
+            else
+            {
+                ok = false;
+            }
+        }
+
+        EVP_PKEY_free(pkey);
+        X509_free(certificate);
+        if (!ok)
+        {
+            return Fail("certificate write failed");
+        }
+
+        // Postcondition (same check the shell-out implementation used):
+        // both files exist and are non-empty.
+        std::error_code size_ec;
+        const bool files_ok = fs::exists(key_path, size_ec)
+            && fs::exists(crt_path, size_ec)
+            && fs::file_size(key_path, size_ec) > 0
+            && fs::file_size(crt_path, size_ec) > 0;
+        if (!files_ok)
+        {
+            if (error != nullptr)
+            {
+                *error = "cert generation failed: written files missing "
+                         "or empty";
+            }
+            return false;
+        }
+        if (error != nullptr)
+        {
+            *error = "";
+        }
+        return true;
+    }
+
     MinioServerHarness::~MinioServerHarness()
     {
         Stop();
@@ -333,21 +439,10 @@ namespace sgns::blockstore::testsupport
             + "\" --address 127.0.0.1:" + std::to_string(port_);
         if (tls)
         {
-            const std::string openssl_bin = ResolveOpenssl();
-            if (openssl_bin.empty())
-            {
-                if (error != nullptr)
-                {
-                    *error = "no openssl resolvable (set "
-                             "SGNS_BLOCKSTORE_TEST_OPENSSL_BIN or build the "
-                             "superbuild openssl)";
-                }
-                return false;
-            }
             certs_dir_ = (std::filesystem::path(data_dir_) / "certs").string();
-            if (!GenerateSelfSignedCert(openssl_bin, certs_dir_, error))
+            if (!GenerateSelfSignedCert(certs_dir_, error))
             {
-                return false;
+                return false; // *error already labelled by the generator
             }
             command += " --certs-dir \"" + certs_dir_ + "\"";
         }

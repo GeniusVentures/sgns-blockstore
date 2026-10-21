@@ -38,6 +38,22 @@ namespace sgns::blockstore::testsupport
         /// @return the env-var binary path ("" when unset).
         static std::string BinaryPath();
 
+        /**
+         * @brief Generate the self-signed TLS fixture for MinIO's
+         *        --certs-dir contract entirely in-process via the OpenSSL
+         *        C API (G-3-1: no external openssl binary, no environment
+         *        variable, no config file, no subprocess of any kind).
+         * @param certs_dir directory to populate (created if missing);
+         *        writes private.key + public.crt with the exact filenames
+         *        MinIO's --certs-dir contract requires
+         * @param error optional failure text; carries
+         *        "cert generation failed: <OpenSSL reason>" on failure
+         *        and is cleared to "" on success
+         * @return true when both files exist and are non-empty
+         */
+        static bool GenerateSelfSignedCert(const std::string& certs_dir,
+                                           std::string* error = nullptr);
+
         MinioServerHarness() = default;
         ~MinioServerHarness(); ///< Stop() if still running (idempotent).
 
@@ -49,11 +65,12 @@ namespace sgns::blockstore::testsupport
          *        with per-run random root credentials and poll
          *        /minio/health/live until ready (deadline-bounded, never a
          *        fixed sleep).
-         * @param tls when true, generate a self-signed certificate (openssl
-         *            resolved via SGNS_BLOCKSTORE_TEST_OPENSSL_BIN, else the
-         *            superbuild openssl install prefix) and start MinIO with
-         *            --certs-dir; @p error carries the labelled reason when
-         *            no openssl is resolvable (caller skips loudly)
+         * @param tls when true, generate a self-signed certificate
+         *            in-process (OpenSSL C API via
+         *            GenerateSelfSignedCert) and start MinIO with
+         *            --certs-dir; @p error carries
+         *            "cert generation failed: <reason>" when generation
+         *            fails - the only TLS-unavailable failure mode
          * @param error optional failure text
          * @return true when the health endpoint answered 200
          */

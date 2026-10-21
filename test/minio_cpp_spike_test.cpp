@@ -249,8 +249,9 @@ TEST(MinioCppSpikeTest, SelfSignedCertGeneratedHermetically)
 }
 
 /**
- * @given an env-gated MinIO server binary (SGNS_BLOCKSTORE_TEST_MINIO_BIN)
- *        and a resolvable openssl for the self-signed fixture
+ * @given an env-gated MinIO server binary (SGNS_BLOCKSTORE_TEST_MINIO_BIN);
+ *        the self-signed TLS fixture is generated in-process by the harness
+ *        (no resolvable openssl needed, G-3-1)
  * @when the client connects with BaseUrl https=true plus
  *        IgnoreCertCheck(true) against the TLS-enabled local server
  * @then the TLS handshake completes and one S3 operation (MakeBucket +
