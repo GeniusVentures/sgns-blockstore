@@ -33,14 +33,15 @@
 // pimpl kept every installed header standalone-compilable with zero
 // RocksDB exposure on the consumer's compile/link line.
 //
-// LOAD-BEARING since Phase 3 (03-01): minio-cpp is now linked PRIVATE
-// into the static library. This TU compiling and running against exactly
-// sgns-blockstore + p2p::p2p_cid - with the miniocpp SDK inside the lib -
-// IS the SC2 no-SDK-type-in-installed-surface proof: any minio type
-// leaking into an installed header would break this TU's standalone
-// compile (header_hygiene's "minio" include ban is the complementary
-// static check). The S3Client seam itself stays internal (D-04); its
-// dedicated guards land with 03-03.
+// LOAD-BEARING since Phase 3 (03-01, completed 03-03): minio-cpp is now
+// linked PRIVATE into the static library AND the SDK-backed MinioS3Client
+// is compiled into it. This TU compiling and running against exactly
+// sgns-blockstore + p2p::p2p_cid - with the full SDK inside the lib - IS
+// the SC2 no-SDK-type-in-installed-surface proof: any minio type leaking
+// into an installed header would break this TU's standalone compile
+// (header_hygiene's "minio" include ban is the complementary static
+// check). The S3Client seam itself stays internal (D-04; src/ headers,
+// asserted by the Head/Delete negative traits below).
 #include <sgns-blockstore/Cid.hpp>
 #include <sgns-blockstore/BlockStatus.hpp>
 #include <sgns-blockstore/Block.hpp>
@@ -144,6 +145,18 @@ namespace
         : std::true_type
     {
     };
+
+    // Phase 3 (03-03): Head is an INTERNAL S3Client op name (D-03/D-04) -
+    // its presence on a public type would mean the adapter seam climbed
+    // to the installed surface. The public existence probe is Has.
+    template <class T, class = void>
+    struct HasHead : std::false_type
+    {
+    };
+    template <class T>
+    struct HasHead<T, std::void_t<decltype(&T::Head)>> : std::true_type
+    {
+    };
 }
 
 // CORE-05: no delete-shaped member may EVER exist on the BlockStore
@@ -176,6 +189,23 @@ static_assert(HasEvictLocal<sgns::blockstore::MemoryBlockStore>::value,
               "D-16 violation: MemoryBlockStore must expose EvictLocal");
 static_assert(HasEvictLocal<sgns::blockstore::LocalBlockStore>::value,
               "D-16 violation: LocalBlockStore must expose EvictLocal");
+
+// D-03 (Phase 3): delete stays an INTERNAL S3Client adapter op - the
+// concrete public backends stay delete-free exactly like the interface.
+static_assert(!HasDelete<sgns::blockstore::MemoryBlockStore>::value,
+              "D-03 violation: MemoryBlockStore must not expose Delete");
+static_assert(!HasDelete<sgns::blockstore::LocalBlockStore>::value,
+              "D-03 violation: LocalBlockStore must not expose Delete");
+
+// S3-symbol negative (03-03, SC2/BACK-06): the internal adapter's op
+// names (Head - the S3 existence probe) must never appear on the public
+// type family; the public existence probe is Has, never Head.
+static_assert(!HasHead<sgns::blockstore::BlockStore>::value,
+              "SC2 violation: BlockStore must not expose an S3-shaped Head");
+static_assert(!HasHead<sgns::blockstore::MemoryBlockStore>::value,
+              "SC2 violation: MemoryBlockStore must not expose Head");
+static_assert(!HasHead<sgns::blockstore::LocalBlockStore>::value,
+              "SC2 violation: LocalBlockStore must not expose Head");
 
 // CORE-06 structural separation: the tooling/enumeration interface is not
 // a base of the data-path interface.
