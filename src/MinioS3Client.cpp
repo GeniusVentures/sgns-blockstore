@@ -95,23 +95,34 @@ namespace sgns::blockstore
     /**
      * @brief Holds every SDK member - the pimpl core (SC2).
      * @note Member order is load-bearing: base_url_ and provider_ must
-     *       outlive client_ (the SDK stores the references).
+     *       outlive client_ (the SDK stores the references), and
+     *       base_url_ must be FULLY configured (port, virtual_style)
+     *       BEFORE client_'s construction - the SDK snapshots the
+     *       BaseUrl when the Client is built, so later field writes do
+     *       not reach it (03-03 matrix spike finding).
      */
     class MinioS3Client::Impl
     {
     public:
+        static minio::s3::BaseUrl MakeBaseUrl(const S3ClientConfig& config)
+        {
+            minio::s3::BaseUrl base_url(
+                config.endpoint,
+                config.useTls,
+                config.region.empty() ? std::string("us-east-1")
+                                      : config.region);
+            base_url.port = config.port;
+            // pathStyle true (the default config) == virtual_style false.
+            base_url.virtual_style = !config.pathStyle;
+            return base_url;
+        }
+
         Impl(const S3ClientConfig& config)
-            : base_url_(config.endpoint,
-                        config.useTls,
-                        config.region.empty() ? std::string("us-east-1")
-                                              : config.region),
+            : base_url_(MakeBaseUrl(config)),
               provider_(config.accessKey, config.secretKey),
               client_(base_url_, &provider_),
               config_(config)
         {
-            base_url_.port = config.port;
-            // pathStyle true (the default config) == virtual_style false.
-            base_url_.virtual_style = !config.pathStyle;
             // The ONLY TLS-verification control path (T-3-02): default
             // tlsVerify=true means certificate checking stays ON.
             client_.IgnoreCertCheck(!config.tlsVerify);

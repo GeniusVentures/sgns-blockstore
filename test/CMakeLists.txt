@@ -65,5 +65,24 @@ target_link_libraries(in_memory_s3_client_test
     p2p::p2p_cid
 )
 
+# D-08 stub fault matrix against the REAL MinioS3Client + the env-gated
+# MinIO-binary live tier (03-03). Hermetic matrix runs in the default CI
+# lane; live cases runtime-skip loudly when the env gate is unset.
+addtest(minio_s3_client_test
+    minio_s3_client_test.cpp
+    LoopbackHttpStub.cpp
+    MinioServerHarness.cpp
+)
+target_include_directories(minio_s3_client_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(minio_s3_client_test
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+)
+if(WIN32)
+    # Stub + harness sockets (WinSock).
+    target_link_libraries(minio_s3_client_test ws2_32)
+endif()
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
