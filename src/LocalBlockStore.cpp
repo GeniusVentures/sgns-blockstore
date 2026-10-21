@@ -561,4 +561,117 @@ namespace sgns::blockstore
     {
         return fault_;
     }
+
+    result<void, BlockStatus> LocalBlockStore::MarkUploadedAccepted(
+        const Cid& cid)
+    {
+        return TransitionJournal(cid, UploadState::UploadedAccepted);
+    }
+
+    result<void, BlockStatus> LocalBlockStore::MarkUploadedDurable(
+        const Cid& cid)
+    {
+        return TransitionJournal(cid, UploadState::UploadedDurable);
+    }
+
+    result<void, BlockStatus> LocalBlockStore::TransitionJournal(
+        const Cid& cid, UploadState new_state)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        // Read-journal-first (T-02-08): transitions move Put-born records
+        // only - marking an unknown CID would fabricate upload state, so
+        // the NotFound branch writes NOTHING.
+        std::string record;
+        const auto present = impl_->db_->Get(
+            impl_->ro_, impl_->journal_, KeySlice(key.value()), &record);
+        if (present.IsNotFound())
+        {
+            return BlockStatus{StatusClass::NotFound, BlockSource::Local,
+                               "journal transition rejected: no journal "
+                               "record for the CID (records are Put-born)"};
+        }
+        if (!present.ok())
+        {
+            return MapStatus(present, "journal transition: record read failed");
+        }
+        // ONE atomic journal update per transition (D-06).
+        rocksdb::WriteBatch batch;
+        batch.Put(impl_->journal_, KeySlice(key.value()),
+                  JournalRecord::Encode(new_state));
+        const auto committed = impl_->db_->Write(impl_->wo_, &batch);
+        if (!committed.ok())
+        {
+            return MapStatus(committed, "journal transition: commit failed");
+        }
+        return outcome::success();
+    }
+
+    result<UploadState, BlockStatus> LocalBlockStore::GetUploadState(
+        const Cid& cid)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        std::string record;
+        const auto status = impl_->db_->Get(
+            impl_->ro_, impl_->journal_, KeySlice(key.value()), &record);
+        if (status.IsNotFound())
+        {
+            // No journal record: absence is reported, never a fabricated
+            // default state value.
+            return BlockStatus{StatusClass::NotFound, BlockSource::Local,
+                               "no journal record for the CID"};
+        }
+        if (!status.ok())
+        {
+            return MapStatus(status, "GetUploadState: record read failed");
+        }
+        // The codec's conservative fallback (PendingUpload) covers any
+        // undecodable record - never silently acknowledged (T-02-03).
+        return JournalRecord::Decode(rocksdb::Slice(record))
+            .value_or(UploadState::PendingUpload);
+    }
+
+    result<void, BlockStatus> LocalBlockStore::EvictLocal(const Cid& cid)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        // Unconditional (D-10): journal state is NEVER consulted, and
+        // deleting absent keys succeeds - the post-state (no local bytes
+        // remain) holds whether or not anything existed, which is exactly
+        // the idempotence contract.
+        rocksdb::WriteBatch batch;
+        batch.Delete(impl_->blocks_, KeySlice(key.value()));
+        batch.Delete(impl_->journal_, KeySlice(key.value()));
+        const auto committed = impl_->db_->Write(impl_->wo_, &batch);
+        if (!committed.ok())
+        {
+            return MapStatus(committed, "EvictLocal: removal commit failed");
+        }
+        return outcome::success();
+    }
 }

@@ -159,8 +159,79 @@ namespace sgns::blockstore
         /** @copydoc FaultController::GetFault() */
         FaultKind GetFault() const override;
 
+        //
+        // Concrete backend-only surface (D-06/D-10) - these methods live
+        // on LocalBlockStore ONLY, never on BlockStore or any facade:
+        // Phase 4's uploader composes over exactly this seam.
+        //
+
+        /**
+         * @brief Record the remote store's accepted-but-not-yet-durable
+         *        acknowledgement in ONE atomic journal update (D-06).
+         *
+         * Moves the CID's journal record to UploadedAccepted. Transitions
+         * move Put-born records only: a CID with no journal record
+         * returns a NotFound failure WITHOUT writing - upload state is
+         * never fabricated for a block that was never Put.
+         *
+         * @param cid the block whose upload was acknowledged
+         * @return success, or NotFound+Local when no record exists, or
+         *         the mapped RocksDB failure
+         */
+        result<void, BlockStatus> MarkUploadedAccepted(const Cid& cid);
+
+        /**
+         * @brief Record confirmed remote durability in ONE atomic journal
+         *        update (D-06).
+         *
+         * Moves the CID's journal record to UploadedDurable; the block
+         * leaves the pending set. Same no-fabrication rule as
+         * MarkUploadedAccepted.
+         *
+         * @param cid the block whose remote storage proved durable
+         * @return success, or NotFound+Local when no record exists, or
+         *         the mapped RocksDB failure
+         */
+        result<void, BlockStatus> MarkUploadedDurable(const Cid& cid);
+
+        /**
+         * @brief Read the CID's journal-record state (D-06 accessor).
+         * @param cid the block whose journal state to read
+         * @return the UploadState, or a NotFound+Local failure when the
+         *         CID has no journal record (never a fabricated default
+         *         state value); an undecodable record reads back
+         *         conservatively as PendingUpload
+         */
+        result<UploadState, BlockStatus> GetUploadState(const Cid& cid);
+
+        /**
+         * @brief Remove this store's LOCAL copy of a block, unconditionally
+         *        (D-10).
+         *
+         * ONE sync WriteBatch removes the block bytes AND the journal
+         * record regardless of journal state - the caller owns eviction
+         * policy; this method never consults durability. Idempotent:
+         * success whenever no local bytes remain, whether or not the CID
+         * was present. Local eviction is not a CRDT deletion and never
+         * touches any remote tier.
+         *
+         * @warning D-10 caveat: evicting a block whose journal state is
+         *          not UploadedDurable may discard the ONLY copy of the
+         *          data - the caller owns that decision. Durability-gated
+         *          eviction is deferred future work per REQUIREMENTS.
+         *
+         * @param cid the block whose local bytes and journal record to drop
+         * @return success once the post-state (no local bytes) holds
+         */
+        result<void, BlockStatus> EvictLocal(const Cid& cid);
+
     private:
         LocalBlockStore(); // construction goes through Open()
+
+        /** @brief Shared gate+read+one-batch-write body of both journal
+         *         transitions (D-06). */
+        result<void, BlockStatus> TransitionJournal(const Cid& cid,
+                                                    UploadState new_state);
 
         class Impl; // RocksDB state - defined in LocalBlockStore.cpp
         std::unique_ptr<Impl> impl_;
