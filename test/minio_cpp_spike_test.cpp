@@ -21,7 +21,10 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -197,6 +200,52 @@ TEST(MinioCppSpikeTest, PreconditionEvidenceShapes)
     ASSERT_FALSE(bare_result);
     EXPECT_TRUE(is_precondition(bare_result.error().String()))
         << "bare no-body 412 not classified: " << bare_result.error().String();
+}
+
+/**
+ * @given a fresh unique temp certs directory and nothing else - zero env
+ *        vars, zero external binaries, zero network
+ * @when MinioServerHarness::GenerateSelfSignedCert writes the TLS fixture
+ *        into it (in-process via the OpenSSL C API, G-3-1)
+ * @then the call returns true with an empty error, and <dir>/private.key
+ *       plus <dir>/public.crt exist, are non-empty, and open with the
+ *       standard PEM headers MinIO's --certs-dir contract requires
+ * @note the portability proof for lanes where the live tier never runs
+ *       (Q3 five-lane posture): this case must pass in the default CI lane
+ *       on every platform
+ */
+TEST(MinioCppSpikeTest, SelfSignedCertGeneratedHermetically)
+{
+    static std::atomic<uint64_t> next{0};
+    const std::string certs_dir = "test-data/cert-hermetic/case-"
+        + std::to_string(next.fetch_add(1));
+
+    std::string error = "sentinel"; // must be cleared on success
+    ASSERT_TRUE(MinioServerHarness::GenerateSelfSignedCert(certs_dir, &error))
+        << error;
+    EXPECT_EQ(error, "");
+
+    namespace fs = std::filesystem;
+    const fs::path key_path = fs::path(certs_dir) / "private.key";
+    const fs::path crt_path = fs::path(certs_dir) / "public.crt";
+    ASSERT_TRUE(fs::exists(key_path)) << key_path.string();
+    ASSERT_TRUE(fs::exists(crt_path)) << crt_path.string();
+
+    std::error_code ec;
+    EXPECT_GT(fs::file_size(key_path, ec), 0u) << key_path.string();
+    EXPECT_GT(fs::file_size(crt_path, ec), 0u) << crt_path.string();
+
+    const auto FirstLine = [](const fs::path& path) {
+        std::ifstream stream(path);
+        std::string line;
+        std::getline(stream, line);
+        return line;
+    };
+    EXPECT_EQ(FirstLine(key_path), "-----BEGIN PRIVATE KEY-----");
+    EXPECT_EQ(FirstLine(crt_path), "-----BEGIN CERTIFICATE-----");
+
+    // The whole test-data/cert-hermetic tree is exclusively this case's.
+    fs::remove_all("test-data/cert-hermetic", ec);
 }
 
 /**
