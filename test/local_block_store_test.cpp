@@ -41,7 +41,10 @@ namespace
     using sgns::blockstore::LocalBlockStore;
     using sgns::blockstore::LocalBlockStoreOptions;
     using sgns::blockstore::StatusClass;
+    using sgns::blockstore::UploadState;
+    using libp2p::multi::HashType;
     using libp2p::multi::MulticodecType;
+    using libp2p::multi::Multihash;
 
     gsl::span<const uint8_t> SpanOf(const std::string& s)
     {
@@ -52,6 +55,22 @@ namespace
     Cid MakeCid(const std::string& payload)
     {
         return CidOf(SpanOf(payload), MulticodecType::Code::RAW).value();
+    }
+
+    Cid Blake2bCid()
+    {
+        // 32 arbitrary bytes as a blake2b-256 digest - the CRDT CBOR
+        // boundary shape that v1 must reject at API entry (D-08).
+        static const uint8_t digest[32] = {
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+        };
+        return Cid(Cid::Version::V1, MulticodecType::Code::RAW,
+                   Multihash::create(HashType::blake2b_256,
+                                     gsl::span<const uint8_t>(digest, 32))
+                       .value());
     }
 
     // SHORT relative path under the build tree (Windows MAX_PATH, A3);
@@ -302,4 +321,181 @@ TEST_F(LocalBlockStoreTest, FaultCorruptDataCorruptsReturnedCopyNotStorage)
     auto pending = store_->GetPendingUploads();
     ASSERT_TRUE(pending);
     ASSERT_EQ(pending.value().size(), 1u); // journal record untouched too
+}
+
+// ===================================================================
+// Journal lifecycle (Plan 02-02): explicit transitions, state reader,
+// restart persistence, re-Put no-regression (D-03/D-06, BACK-04).
+// ===================================================================
+
+/**
+ * @given a block Put into the store
+ * @when its journal state is read
+ * @then GetUploadState == PendingUpload (the day-one birth state from
+ *        the 02-01 one-batch commit) and GetPendingUploads lists exactly
+ *        that CID
+ */
+TEST_F(LocalBlockStoreTest, JournalBirthStateIsPendingUpload)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::PendingUpload);
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u);
+    EXPECT_EQ(pending.value()[0], cid_a_);
+}
+
+/**
+ * @given a pending block
+ * @when MarkUploadedAccepted transitions it
+ * @then GetUploadState == UploadedAccepted, the pending set is EMPTY
+ *        (accepted is not pending), and Get still returns the block
+ *        byte-identical - a journal move never touches block bytes
+ */
+TEST_F(LocalBlockStoreTest, MarkUploadedAcceptedMovesStateAndShrinksPending)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->MarkUploadedAccepted(cid_a_));
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::UploadedAccepted);
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    EXPECT_TRUE(pending.value().empty());
+    auto got = store_->Get(cid_a_);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got.value().bytes,
+              std::vector<uint8_t>(payload_a_.begin(), payload_a_.end()));
+}
+
+/**
+ * @given an accepted block
+ * @when MarkUploadedDurable transitions it
+ * @then GetUploadState == UploadedDurable, the pending set is still
+ *        empty, and the block remains retrievable byte-identical
+ */
+TEST_F(LocalBlockStoreTest, MarkUploadedDurableMovesStateBlockRetrievable)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->MarkUploadedAccepted(cid_a_));
+    ASSERT_TRUE(store_->MarkUploadedDurable(cid_a_));
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    EXPECT_TRUE(pending.value().empty());
+    EXPECT_TRUE(store_->Get(cid_a_));
+}
+
+/**
+ * @given a store with cid_a marked UploadedDurable and cid_b pending
+ * @when the store is destroyed (no-flush close) and the same directory
+ *        reopened
+ * @then WAL replay recovers the journal: GetUploadState(cid_a) is still
+ *        UploadedDurable, GetPendingUploads() == {cid_b} exactly, and
+ *        both blocks Get byte-identical (BACK-04: journal durable +
+ *        recoverable, restart reconciliation separates the sets)
+ */
+TEST_F(LocalBlockStoreTest, JournalStateSurvivesRestart)
+{
+    const std::string dir = NextUniqueDir();
+    {
+        auto store = MakeStore(dir);
+        ASSERT_NE(store, nullptr);
+        ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_)));
+        ASSERT_TRUE(store->Put(cid_b_, SpanOf(payload_b_)));
+        ASSERT_TRUE(store->MarkUploadedDurable(cid_a_));
+    }
+    auto reopened = ReopenStore(dir);
+    ASSERT_NE(reopened, nullptr);
+    auto state = reopened->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+    auto pending = reopened->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u);
+    EXPECT_EQ(pending.value()[0], cid_b_);
+    EXPECT_TRUE(reopened->Get(cid_a_));
+    EXPECT_TRUE(reopened->Get(cid_b_));
+}
+
+/**
+ * @given a CID that was never Put (no journal record exists)
+ * @when MarkUploadedDurable or GetUploadState addresses it
+ * @then both return a NotFound failure with source Local - transitions
+ *        move Put-born records only and NEVER fabricate upload state
+ *        (T-02-08), and the state reader reports absence rather than a
+ *        default state value
+ */
+TEST_F(LocalBlockStoreTest, TransitionOnUnknownCidIsNotFound)
+{
+    ASSERT_NE(store_, nullptr);
+    auto marked = store_->MarkUploadedDurable(cid_a_);
+    ASSERT_FALSE(marked);
+    EXPECT_EQ(marked.error().code, StatusClass::NotFound);
+    EXPECT_EQ(marked.error().source, BlockSource::Local);
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_FALSE(state);
+    EXPECT_EQ(state.error().code, StatusClass::NotFound);
+    EXPECT_EQ(state.error().source, BlockSource::Local);
+    // no record was invented by the failed transition
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    EXPECT_TRUE(pending.value().empty());
+}
+
+/**
+ * @given a block whose journal record is UploadedDurable
+ * @when the identical (cid, bytes) pair is Put again
+ * @then the re-Put succeeds with alreadyPresent == true and the journal
+ *        state is STILL UploadedDurable with an empty pending set - the
+ *        conditional journal write means a re-Put never regresses upload
+ *        state (Pitfall 6; redundant-re-upload hazard for Phase 4)
+ */
+TEST_F(LocalBlockStoreTest, RePutDoesNotRegressJournalState)
+{
+    ASSERT_NE(store_, nullptr);
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    ASSERT_TRUE(store_->MarkUploadedDurable(cid_a_));
+    auto re_put = store_->Put(cid_a_, SpanOf(payload_a_));
+    ASSERT_TRUE(re_put);
+    EXPECT_TRUE(re_put.value().alreadyPresent);
+    auto state = store_->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+    auto pending = store_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    EXPECT_TRUE(pending.value().empty());
+}
+
+/**
+ * @given the journal transition surface
+ * @when a non-sha256 CID crosses it, or the Unavailable fault is active
+ * @then the non-sha256 CID THROWS std::invalid_argument before any
+ *        storage access (D-08), and under the fault MarkUploadedDurable
+ *        fails TemporarilyUnavailable with source Local BEFORE RocksDB
+ *        is touched - then clears non-stickily
+ */
+TEST_F(LocalBlockStoreTest, TransitionsRespectEntryGates)
+{
+    ASSERT_NE(store_, nullptr);
+    EXPECT_THROW((void)store_->MarkUploadedDurable(Blake2bCid()),
+                 std::invalid_argument);
+    EXPECT_THROW((void)store_->GetUploadState(Blake2bCid()),
+                 std::invalid_argument);
+
+    ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
+    store_->SetFault(FaultKind::Unavailable);
+    auto marked = store_->MarkUploadedDurable(cid_a_);
+    ASSERT_FALSE(marked);
+    EXPECT_EQ(marked.error().code, StatusClass::TemporarilyUnavailable);
+    EXPECT_EQ(marked.error().source, BlockSource::Local);
+    store_->SetFault(FaultKind::None);
+    ASSERT_TRUE(store_->MarkUploadedDurable(cid_a_)); // clears non-stickily
 }
