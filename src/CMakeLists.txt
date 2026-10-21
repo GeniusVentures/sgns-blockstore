@@ -1,6 +1,7 @@
 add_library(sgns-blockstore STATIC
     Cid.cpp
     ContractHeaders.cpp
+    InMemoryS3Client.cpp
     LocalBlockStore.cpp
     MemoryBlockStore.cpp
 )
