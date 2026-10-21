@@ -11,6 +11,14 @@ target_link_libraries(cid_spike_test
     p2p::p2p_cid
 )
 target_include_directories(memory_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
+
+addtest(local_block_store_test local_block_store_test.cpp)
+target_link_libraries(local_block_store_test
+    sgns-blockstore
+    p2p::p2p_cid
+)
+target_include_directories(local_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
+
 addtest(api_hygiene_test api_hygiene_test.cpp)
 target_link_libraries(api_hygiene_test
     sgns-blockstore

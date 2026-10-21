@@ -7,6 +7,7 @@
 #define SGNS_BLOCKSTORE_BLOCKSTORETOOLING_HPP
 
 #include <functional>
+#include <vector>
 
 #include <gsl/span>
 
@@ -25,8 +26,8 @@ namespace sgns::blockstore
      * without the published data-path API ever growing a listing
      * capability.
      *
-     * @note v1 ships the header-level separation and this documented
-     *       contract only - no backend implements it yet. Future
+     * @note v1 implementer: LocalBlockStore (Phase 2) implements this
+     *       interface; the header-level separation predates it. Future
      *       implementers MUST honor the ordering contract below.
      * @note Ordering contract: iteration proceeds in lexicographic order
      *       over the ENCODED CID bytes (ContentIdentifierCodec::encode),
@@ -50,6 +51,27 @@ namespace sgns::blockstore
         virtual result<void, BlockStatus> ForEach(
             const std::function<void(const Cid&, gsl::span<const uint8_t>)>& visitor)
             = 0;
+
+        /**
+         * @brief Enumerate the pending-upload set for restart
+         *        reconciliation (D-05).
+         *
+         * Returns the CIDs whose upload-journal state is PendingUpload -
+         * blocks committed locally whose remote upload has never been
+         * acknowledged. Placement follows D-05: enumeration NEVER lives
+         * on BlockStore (CORE-06); this tooling surface is its only
+         * home. No callback machinery in v1: the scan is synchronous and
+         * the pending set is available immediately after a store Open.
+         *
+         * @note Ordering contract: the returned CIDs appear in the same
+         *       order as ForEach iteration - lexicographic over the
+         *       ENCODED CID bytes, over a snapshot of the journal taken
+         *       at call start.
+         *
+         * @return the pending-upload CID set in documented order, or the
+         *         BlockStatus failure that aborted the scan
+         */
+        virtual result<std::vector<Cid>, BlockStatus> GetPendingUploads() = 0;
     };
 }
 

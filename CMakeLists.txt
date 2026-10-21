@@ -12,6 +12,11 @@ include(cmake/functions.cmake)
 
 find_package(libp2p CONFIG REQUIRED)
 
+# NO version argument (BACK-03 dual-compat): the installed config version
+# file is COMPATIBILITY SameMajorVersion, so a versioned request would
+# reject a consumer-side 11.1.2 install against this 9.4 build.
+find_package(RocksDB CONFIG REQUIRED)
+
 if(GSL_INCLUDE_DIR)
     include_directories(${GSL_INCLUDE_DIR})
 endif()
