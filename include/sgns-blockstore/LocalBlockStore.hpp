@@ -95,9 +95,10 @@ namespace sgns::blockstore
      * Durability mapping (D-02/D-10 duty): BACK-03's
      * "(temp + fsync + rename)" is satisfied by RocksDB's own WAL commit
      * machinery - one WriteBatch committed with WriteOptions::sync=true
-     * IS the atomic-durable commit. There are NO temp files by design, so
-     * a startup temp-file sweep is vacuous; startup reconciliation is
-     * journal enumeration (GetPendingUploads) only.
+     * IS the atomic-durable commit. There are NO temp files by design,
+     * so ROADMAP Phase-2 criterion 4's "sweeps stale temp files" is
+     * VACUOUS by design - the startup sweep IS journal reconciliation
+     * (GetPendingUploads) only.
      *
      * Pimpl (Phase-2 Pattern 1): zero RocksDB types in this header - all
      * rocksdb::* usage lives in LocalBlockStore.cpp, so a consumer's

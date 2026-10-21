@@ -25,6 +25,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <memory>
@@ -271,4 +272,108 @@ TEST_F(LocalBlockStoreCrashTest, CrashBeforeCommitLeavesNothing)
     auto pending = reopened->GetPendingUploads();
     ASSERT_TRUE(pending);
     EXPECT_TRUE(pending.value().empty()); // journal reconciled: EMPTY
+}
+
+// ===================================================================
+// Reconciliation suite (Plan 02-03 Task 2, SC 3 second half + SC 4)
+// ===================================================================
+
+/**
+ * @given a committed Put (sync=true) followed by a no-flush close
+ * @when the same directory reopens
+ * @then BOTH the CID-verified block AND its PendingUpload journal
+ *        record recover: the block and journal ride ONE WAL record, so
+ *        they recover together or not at all - there is no intermediate
+ *        state, and that absence IS SC 3's no-torn-block claim (D-08)
+ */
+TEST_F(LocalBlockStoreCrashTest, CrashAfterCommitRecoversBlockAndPending)
+{
+    const std::string dir = NextUniqueDir();
+    {
+        auto store = MakeStore(dir);
+        ASSERT_NE(store, nullptr);
+        ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_))); // sync commit
+    } // destruction: no-flush close - the committed batch lives in the WAL
+
+    auto reopened = ReopenStore(dir); // WAL replay runs
+    ASSERT_NE(reopened, nullptr);
+    auto got = reopened->Get(cid_a_);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got.value().bytes,
+              std::vector<uint8_t>(payload_a_.begin(), payload_a_.end()));
+    auto pending = reopened->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u);
+    EXPECT_EQ(pending.value()[0], cid_a_);
+}
+
+/**
+ * @given journal transitions recorded before a crash (cid_a durable,
+ *        cid_b pending)
+ * @when the store reopens
+ * @then reconciliation restores the EXACT last-committed journal
+ *        state: GetUploadState(cid_a) == UploadedDurable,
+ *        GetPendingUploads() == {cid_b}, both blocks retrievable -
+ *        D-05 synchronous enumeration at Open, no callback machinery
+ *        (SC 4)
+ */
+TEST_F(LocalBlockStoreCrashTest, JournalTransitionsReconcileAcrossRestart)
+{
+    const std::string dir = NextUniqueDir();
+    {
+        auto store = MakeStore(dir);
+        ASSERT_NE(store, nullptr);
+        ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_)));
+        ASSERT_TRUE(store->Put(cid_b_, SpanOf(payload_b_)));
+        ASSERT_TRUE(store->MarkUploadedDurable(cid_a_));
+    }
+    auto reopened = ReopenStore(dir);
+    ASSERT_NE(reopened, nullptr);
+    auto state = reopened->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+    auto pending = reopened->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u);
+    EXPECT_EQ(pending.value()[0], cid_b_);
+    EXPECT_TRUE(reopened->Get(cid_a_));
+    EXPECT_TRUE(reopened->Get(cid_b_));
+}
+
+/**
+ * @given the D-02 mapping documented in LocalBlockStore.hpp: no temp
+ *        files exist by design, so ROADMAP Phase-2 criterion 4's
+ *        "sweeps stale temp files" is VACUOUS - startup sweep IS
+ *        journal reconciliation only
+ * @when a new block commits across a restart cycle in a fresh directory
+ * @then reconciliation needs no sweep step: after reopen the pending
+ *        set is exactly the committed blocks, and a further Put+restart
+ *        extends it exactly - no artifacts, no manual recovery state
+ */
+TEST_F(LocalBlockStoreCrashTest, VacuousSweepDocumentationHolds)
+{
+    const std::string dir = NextUniqueDir();
+    const std::string payload_c = "crash suite payload c - reconciliation";
+    const Cid cid_c = MakeCid(payload_c);
+    {
+        auto store = MakeStore(dir);
+        ASSERT_NE(store, nullptr);
+        ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_)));
+    }
+    {
+        auto reopened = ReopenStore(dir);
+        ASSERT_NE(reopened, nullptr);
+        ASSERT_TRUE(reopened->Put(cid_c, SpanOf(payload_c)));
+    }
+    auto reopened2 = ReopenStore(dir);
+    ASSERT_NE(reopened2, nullptr);
+    auto pending = reopened2->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 2u); // exactly the committed set
+    EXPECT_NE(std::find(pending.value().begin(), pending.value().end(), cid_a_),
+              pending.value().end());
+    EXPECT_NE(std::find(pending.value().begin(), pending.value().end(), cid_c),
+              pending.value().end());
+    EXPECT_TRUE(reopened2->Get(cid_a_));
+    EXPECT_TRUE(reopened2->Get(cid_c));
 }
