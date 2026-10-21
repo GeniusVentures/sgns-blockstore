@@ -86,8 +86,19 @@ namespace
                             : pos;
                         if (value_pos != std::string::npos)
                         {
-                            content_length = static_cast<size_t>(std::stoul(
-                                headers.substr(headers.find(':', value_pos) + 1)));
+                            // A garbage Content-Length value (one of the
+                            // stub's own fault shapes) must not throw out
+                            // of the accept loop - parse defensively.
+                            try
+                            {
+                                content_length = static_cast<size_t>(
+                                    std::stoul(headers.substr(
+                                        headers.find(':', value_pos) + 1)));
+                            }
+                            catch (const std::exception&)
+                            {
+                                content_length = 0;
+                            }
                         }
                     }
                 }
