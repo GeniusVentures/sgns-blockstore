@@ -19,6 +19,16 @@ target_link_libraries(local_block_store_test
 )
 target_include_directories(local_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
 
+# Crash suite links RocksDB DIRECTLY for the raw second-handle corruption
+# forge - test-surface-only privilege; the installed library's public link
+# surface is unchanged.
+addtest(local_block_store_crash_test local_block_store_crash_test.cpp)
+target_link_libraries(local_block_store_crash_test
+    sgns-blockstore
+    p2p::p2p_cid
+    RocksDB::rocksdb
+)
+
 addtest(api_hygiene_test api_hygiene_test.cpp)
 target_link_libraries(api_hygiene_test
     sgns-blockstore
