@@ -35,8 +35,9 @@ target_link_libraries(api_hygiene_test
     p2p::p2p_cid
 )
 
-# In-process self-signed cert generation in MinioServerHarness (G-3-1):
-# explicit OpenSSL::Crypto on every target compiling the harness - never
+# In-process self-signed cert generation (OpenSSL::Crypto) and the
+# TLS-wrapped health probe (OpenSSL::SSL) in MinioServerHarness (G-3-1):
+# explicit links on every target compiling the harness - never
 # miniocpp's transitive surface. Resolution is deterministic: the
 # superbuild injects OPENSSL_ROOT_DIR / OPENSSL_USE_STATIC_LIBS /
 # OPENSSL_MSVC_STATIC_RT into this sub-build via its openssl cache args.
@@ -55,6 +56,7 @@ target_link_libraries(minio_cpp_spike_test
     p2p::p2p_cid
     miniocpp::miniocpp
     OpenSSL::Crypto
+    OpenSSL::SSL
 )
 if(WIN32)
     # Raw-socket stub + harness health probe (WinSock).
@@ -87,6 +89,7 @@ target_link_libraries(minio_s3_client_test
     p2p::p2p_cid
     miniocpp::miniocpp
     OpenSSL::Crypto
+    OpenSSL::SSL
 )
 if(WIN32)
     # Stub + harness sockets (WinSock).

@@ -22,6 +22,7 @@
 #include <openssl/err.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
@@ -109,13 +110,74 @@ namespace
         return ok;
     }
 
+#ifdef _WIN32
+    using SocketHandle = SOCKET;
+#else
+    using SocketHandle = int;
+#endif
+
+    /// @brief One TLS-wrapped health exchange over an ALREADY-CONNECTED
+    ///        socket: SSL handshake, then the same health request /
+    ///        " 200 " status-line check as the plaintext probe. Community
+    ///        MinIO serves TLS-only on the API port once --certs-dir is
+    ///        configured, so the TLS-on readiness poll must speak TLS
+    ///        (user-approved option (a), G-3-1 closure). Certificate
+    ///        verification is disabled (SSL_VERIFY_NONE): the fixture
+    ///        serves the in-process self-signed cert, mirroring the
+    ///        client-side IgnoreCertCheck(true) posture (Q2). The caller
+    ///        owns the socket and closes it; both OpenSSL handles are
+    ///        freed on every path (the poll re-invokes this every
+    ///        250 ms up to the deadline - leaks would compound).
+    /// @param socket_handle connected TCP socket to the MinIO API port
+    /// @param request HTTP/1.0 health-request bytes to send
+    /// @return true when the response status line contains " 200 "
+    bool TlsHealthExchange(SocketHandle socket_handle,
+                           const std::string& request)
+    {
+        SSL_CTX* context = SSL_CTX_new(TLS_client_method());
+        if (context == nullptr)
+        {
+            return false;
+        }
+        SSL_CTX_set_verify(context, SSL_VERIFY_NONE, nullptr);
+        SSL* ssl = SSL_new(context);
+        if (ssl == nullptr)
+        {
+            SSL_CTX_free(context);
+            return false;
+        }
+        bool healthy = false;
+        if (SSL_set_fd(ssl, static_cast<int>(socket_handle)) == 1
+            && SSL_connect(ssl) == 1)
+        {
+            if (SSL_write(ssl, request.data(),
+                          static_cast<int>(request.size()))
+                > 0)
+            {
+                char response[256] = {0};
+                const int received =
+                    SSL_read(ssl, response, sizeof(response) - 1);
+                healthy = received > 0
+                    && std::string(response).find(" 200 ")
+                           != std::string::npos;
+            }
+        }
+        SSL_shutdown(ssl); // best-effort close_notify
+        SSL_free(ssl);
+        SSL_CTX_free(context);
+        return healthy;
+    }
+
     /// @brief Deadline-bounded liveness poll of the MinIO health endpoint:
-    ///        TCP connect + "GET /minio/health/live" until a 200 status line.
-    ///        Never a fixed sleep (Phase-1 discipline).
+    ///        TCP connect + "GET /minio/health/live" until a 200 status
+    ///        line - plaintext when @p tls is false (byte-identical to
+    ///        the historical probe), TLS-wrapped via TlsHealthExchange
+    ///        when @p tls is true (the API port is TLS-only once
+    ///        --certs-dir is configured). Never a fixed sleep (Phase-1
+    ///        discipline).
     bool WaitUntilHealthy(const std::string& host, uint16_t port,
                           bool tls, int deadline_seconds)
     {
-        (void)tls; // plain socket probe: TLS-off connect check is sufficient
         const auto deadline =
             std::chrono::steady_clock::now()
             + std::chrono::seconds(deadline_seconds);
@@ -139,18 +201,30 @@ namespace
                     const std::string request =
                         "GET /minio/health/live HTTP/1.0\r\n"
                         "Host: " + host + "\r\n\r\n";
-                    send(socket_handle, request.data(),
-                         static_cast<int>(request.size()), 0);
-                    char response[256] = {0};
-                    const int received =
-                        recv(socket_handle, response, sizeof(response) - 1, 0);
+                    bool healthy = false;
+                    if (tls)
+                    {
+                        healthy = TlsHealthExchange(socket_handle,
+                                                    request);
+                    }
+                    else
+                    {
+                        send(socket_handle, request.data(),
+                             static_cast<int>(request.size()), 0);
+                        char response[256] = {0};
+                        const int received =
+                            recv(socket_handle, response,
+                                 sizeof(response) - 1, 0);
+                        healthy = received > 0
+                            && std::string(response).find(" 200 ")
+                                   != std::string::npos;
+                    }
 #ifdef _WIN32
                     closesocket(socket_handle);
 #else
                     close(socket_handle);
 #endif
-                    if (received > 0
-                        && std::string(response).find(" 200 ") != std::string::npos)
+                    if (healthy)
                     {
                         return true;
                     }

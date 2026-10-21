@@ -275,7 +275,10 @@ TEST(MinioCppSpikeTest, EnvGatedTlsOnSmoke)
                         "unavailable: " << error;
     }
 
-    ASSERT_TRUE(harness.MakeBucket("spike-tls", &error)) << error;
+    // The bucket must match the one MakePutArgs targets ("spike-bucket"
+    // is the shared fixture name; the hermetic stub lane never enforces
+    // existence, the real server does).
+    ASSERT_TRUE(harness.MakeBucket("spike-bucket", &error)) << error;
 
     minio::s3::BaseUrl base_url("127.0.0.1", /*https=*/true, "us-east-1");
     base_url.port = harness.Port();
