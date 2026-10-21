@@ -20,6 +20,15 @@ find_package(RocksDB CONFIG REQUIRED)
 # minio-cpp SDK lives behind the INTERNAL S3Client adapter seam (Phase 3,
 # BACK-06/D-04): linked PRIVATE in src/ — no installed header references it,
 # so it adds nothing to the public surface (SC2 containment).
+#
+# cpp-httplib is found EXPLICITLY first: miniocpp's consumer config
+# (miniocpp-config.cmake -> miniocpp-deps.cmake) resolves httplib via a
+# QUIET config find whose target does not register for find_package's
+# imported-target-reference verification, leaving miniocpp_FOUND FALSE
+# with "imported targets are referenced, but are missing: httplib::httplib"
+# (Phase-3 spike finding, 2026-10-21; httplib_DIR comes from the superbuild
+# entry - standalone configures pass it or CMAKE_PREFIX_PATH).
+find_package(httplib CONFIG REQUIRED)
 find_package(miniocpp CONFIG REQUIRED)
 
 if(GSL_INCLUDE_DIR)

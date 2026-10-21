@@ -35,5 +35,23 @@ target_link_libraries(api_hygiene_test
     p2p::p2p_cid
 )
 
+# D-11 day-one spike (Phase 3): hermetic wire-evidence tests against the
+# raw-socket loopback stub, plus the env-gated MinIO-binary TLS smoke
+# (D-06/D-07/D-09 - runtime-skipped, never a CMake gate).
+addtest(minio_cpp_spike_test
+    minio_cpp_spike_test.cpp
+    LoopbackHttpStub.cpp
+    MinioServerHarness.cpp
+)
+target_link_libraries(minio_cpp_spike_test
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+)
+if(WIN32)
+    # Raw-socket stub + harness health probe (WinSock).
+    target_link_libraries(minio_cpp_spike_test ws2_32)
+endif()
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
