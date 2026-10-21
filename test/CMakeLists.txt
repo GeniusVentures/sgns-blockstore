@@ -53,5 +53,17 @@ if(WIN32)
     target_link_libraries(minio_cpp_spike_test ws2_32)
 endif()
 
+# SC3 hermetic adapter tier (Phase 3, 03-02): the InMemoryS3Client fake.
+# SDK-free - links exactly the library + p2p_cid like every backend suite.
+# src/ include path: the internal adapter headers are deliberately NOT on
+# the library's public include surface (D-04) - the test reaches them
+# directly, test-surface-only privilege (crash-suite precedent).
+addtest(in_memory_s3_client_test in_memory_s3_client_test.cpp)
+target_include_directories(in_memory_s3_client_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(in_memory_s3_client_test
+    sgns-blockstore
+    p2p::p2p_cid
+)
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
