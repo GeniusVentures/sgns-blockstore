@@ -17,6 +17,11 @@ find_package(libp2p CONFIG REQUIRED)
 # reject a consumer-side 11.1.2 install against this 9.4 build.
 find_package(RocksDB CONFIG REQUIRED)
 
+# minio-cpp SDK lives behind the INTERNAL S3Client adapter seam (Phase 3,
+# BACK-06/D-04): linked PRIVATE in src/ — no installed header references it,
+# so it adds nothing to the public surface (SC2 containment).
+find_package(miniocpp CONFIG REQUIRED)
+
 if(GSL_INCLUDE_DIR)
     include_directories(${GSL_INCLUDE_DIR})
 endif()
