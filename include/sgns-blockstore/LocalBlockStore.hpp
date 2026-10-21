@@ -47,6 +47,26 @@ namespace sgns::blockstore
     };
 
     /**
+     * @brief TEST-ONLY crash-point seam (D-07) - never read by
+     *        production paths beyond the Put short-circuit.
+     *
+     * BeforeCommit models process death BEFORE the atomic DB::Write
+     * commit: Put returns TemporarilyUnavailable WITHOUT writing, so
+     * the caller never saw success. There is deliberately NO
+     * mid-commit point: a WriteBatch serializes as ONE atomic WAL
+     * record, so an interrupted DB::Write leaves the whole batch or
+     * none of it - before/after DB::Write is the COMPLETE crash-window
+     * pair. AfterCommit is implicit: any committed Put plus an
+     * immediate no-flush close IS crash-after-commit (covered by the
+     * restart and reconciliation tests).
+     */
+    enum class CrashPoint
+    {
+        None,         ///< normal operation
+        BeforeCommit, ///< Put short-circuits before DB::Write (simulated death)
+    };
+
+    /**
      * @brief Options for opening a LocalBlockStore.
      */
     struct LocalBlockStoreOptions
@@ -225,6 +245,19 @@ namespace sgns::blockstore
          */
         result<void, BlockStatus> EvictLocal(const Cid& cid);
 
+        /**
+         * @brief Arm the TEST-ONLY crash-point seam (D-07).
+         *
+         * Concrete method on the backend type ONLY - the frozen
+         * FaultKind enum and FaultController surface are untouched.
+         * Defaults to CrashPoint::None; BeforeCommit makes subsequent
+         * Puts return TemporarilyUnavailable before any DB::Write call
+         * without mutating stored state.
+         *
+         * @param point the crash point to arm (None clears)
+         */
+        void SetCrashPointForTesting(CrashPoint point);
+
     private:
         LocalBlockStore(); // construction goes through Open()
 
@@ -236,6 +269,7 @@ namespace sgns::blockstore
         class Impl; // RocksDB state - defined in LocalBlockStore.cpp
         std::unique_ptr<Impl> impl_;
         FaultKind fault_ = FaultKind::None; ///< conformance seam state (never read by production paths)
+        CrashPoint crash_point_ = CrashPoint::None; ///< test-only crash seam state (D-07)
     };
 }
 

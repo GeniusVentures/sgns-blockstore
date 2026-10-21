@@ -331,6 +331,17 @@ namespace sgns::blockstore
         }
         const bool already_present = presence.ok();
 
+        // D-07 test seam: simulate process death BEFORE the atomic
+        // DB::Write commit. The caller never sees success and NOTHING is
+        // written - no torn block, no orphan journal record.
+        if (crash_point_ == CrashPoint::BeforeCommit)
+        {
+            return BlockStatus{StatusClass::TemporarilyUnavailable,
+                               BlockSource::Local,
+                               "crash point: process simulated dead before "
+                               "DB::Write"};
+        }
+
         // D-02/D-03/D-04: ONE WriteBatch carries the block bytes AND - only
         // for a new block - the PendingUpload journal record. DB::Write is
         // the atomicity boundary: after a crash either BOTH exist or
@@ -393,13 +404,37 @@ namespace sgns::blockstore
             }
             if (!(computed.value() == cid))
             {
-                // Stored bytes failed CID verification (T-02-01): silent
-                // garbage is never returned as a block. The D-09
-                // evict-and-surface self-heal is Plan 02-03 - both the
-                // fault-induced and real-corruption sources surface
-                // Corrupt+Local here, with NO eviction on this path.
+                if (fault_ == FaultKind::CorruptData)
+                {
+                    // Fault-induced corruption: the seam flipped a byte on
+                    // the RETURNED COPY only - stored bytes are fine, so NO
+                    // eviction (Pitfall 3; the kit's non-sticky contract).
+                    return BlockStatus{StatusClass::Corrupt,
+                                       BlockSource::Local,
+                                       "Get rejected: stored bytes failed CID "
+                                       "re-verification"};
+                }
+                // REAL on-disk corruption (D-09 evict-and-surface): surface
+                // Corrupt for THIS call AND atomically remove block +
+                // journal so subsequent Gets report NotFound and a re-Put
+                // repairs. Get is write-capable ONLY on this path. The
+                // eviction write is best-effort: its failure is appended to
+                // the message, never swallowed, and the Corrupt result still
+                // returns.
+                rocksdb::WriteBatch removal;
+                removal.Delete(impl_->blocks_, KeySlice(key.value()));
+                removal.Delete(impl_->journal_, KeySlice(key.value()));
+                const auto evicted = impl_->db_->Write(impl_->wo_, &removal);
+                std::string message =
+                    "Get rejected: stored bytes failed CID verification - "
+                    "entry evicted, re-Put to repair";
+                if (!evicted.ok())
+                {
+                    message += " (eviction write failed: "
+                             + evicted.ToString() + ")";
+                }
                 return BlockStatus{StatusClass::Corrupt, BlockSource::Local,
-                                   "Get rejected: stored bytes failed CID re-verification"};
+                                   message};
             }
         }
         return Block{cid, std::move(bytes)};
@@ -555,6 +590,11 @@ namespace sgns::blockstore
     void LocalBlockStore::SetFault(FaultKind kind)
     {
         fault_ = kind;
+    }
+
+    void LocalBlockStore::SetCrashPointForTesting(CrashPoint point)
+    {
+        crash_point_ = point;
     }
 
     FaultKind LocalBlockStore::GetFault() const
