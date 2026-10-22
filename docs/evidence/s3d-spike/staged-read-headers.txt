@@ -1,0 +1,162 @@
+mc.exe: <DEBUG> GET /sgns-spike/?location= HTTP/1.1
+At line:1 char:368
++ ... t 1 }; $cap = (W:\gnus\mc.exe --debug stat "s3d/$b/$key" 2>&1 | Out-S ...
++                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (mc.exe: <DEBUG>...ation= HTTP/1.1 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Host: 127.0.0.1:8000
+User-Agent: MinIO (windows; amd64) minio-go/v7.0.90 
+mc.exe/RELEASE.2025-08-13T08-35-41Z
+Accept-Encoding: zstd,gzip
+Authorization: AWS4-HMAC-SHA256 
+Credential=**REDACTED**/20261022/us-east-1/s3/aws4_request, 
+SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=**REDACTED**
+X-Amz-Content-Sha256: 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+X-Amz-Date: 20261022T183242Z
+
+mc.exe: <DEBUG> HTTP/1.1 200 OK
+Content-Length: 128
+Content-Type: application/xml
+Date: Thu, 22 Oct 2026 18:32:42 GMT
+Vary: Origin
+
+mc.exe: <DEBUG> Response Time:  1.0752ms
+
+mc.exe: <DEBUG> GET /sgns-spike/?delimiter=%2F&encoding-type=url&fetch-owner=tr
+ue&list-type=2&prefix=sgns-s3d-spike%2F20261022T143209-489631609747900 HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: MinIO (windows; amd64) minio-go/v7.0.90 
+mc.exe/RELEASE.2025-08-13T08-35-41Z
+Accept-Encoding: zstd,gzip
+Authorization: AWS4-HMAC-SHA256 
+Credential=**REDACTED**/20261022/us-east-1/s3/aws4_request, 
+SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=**REDACTED**
+X-Amz-Content-Sha256: 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+X-Amz-Date: 20261022T183242Z
+
+mc.exe: <DEBUG> HTTP/1.1 200 OK
+Content-Length: 715
+Content-Type: application/xml
+Date: Thu, 22 Oct 2026 18:32:42 GMT
+Vary: Origin
+
+mc.exe: <DEBUG> Response Time:  519.9??s
+
+mc.exe: <DEBUG> HEAD 
+/sgns-spike/sgns-s3d-spike/20261022T143209-489631609747900 HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: MinIO (windows; amd64) minio-go/v7.0.90 
+mc.exe/RELEASE.2025-08-13T08-35-41Z
+Authorization: AWS4-HMAC-SHA256 
+Credential=**REDACTED**/20261022/us-east-1/s3/aws4_request, 
+SignedHeaders=host;x-amz-checksum-mode;x-amz-content-sha256;x-amz-date, 
+Signature=**REDACTED**
+X-Amz-Checksum-Mode: ENABLED
+X-Amz-Content-Sha256: 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+X-Amz-Date: 20261022T183242Z
+
+mc.exe: <DEBUG> HTTP/1.1 200 OK
+Content-Length: 38
+Accept-Ranges: bytes
+Content-Type: application/octet-stream
+Date: Thu, 22 Oct 2026 18:32:42 GMT
+Etag: "2fc3a566d2d1360552676ad2495e28d2"
+Last-Modified: Thu, 22 Oct 2026 18:32:09 GMT
+Vary: Origin
+
+mc.exe: <DEBUG> Response Time:  518.8??s
+
+Name      : 20261022T143209-489631609747900
+Date      : 2026-10-22 14:32:09 EDT 
+Size      : 38 B   
+ETag      : 2fc3a566d2d1360552676ad2495e28d2 
+Type      : file 
+Metadata  :
+  Content-Type: application/octet-stream 
+
+
+===== mc --debug cat (GET wire) =====
+mc.exe: <DEBUG> GET /sgns-spike/?location= HTTP/1.1
+At line:1 char:438
++ ... tring); $cat = (W:\gnus\mc.exe --debug cat "s3d/$b/$key" 2>&1 | Out-S ...
++                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (mc.exe: <DEBUG>...ation= HTTP/1.1 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Host: 127.0.0.1:8000
+User-Agent: MinIO (windows; amd64) minio-go/v7.0.90 
+mc.exe/RELEASE.2025-08-13T08-35-41Z
+Accept-Encoding: zstd,gzip
+Authorization: AWS4-HMAC-SHA256 
+Credential=**REDACTED**/20261022/us-east-1/s3/aws4_request, 
+SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=**REDACTED**
+X-Amz-Content-Sha256: 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+X-Amz-Date: 20261022T183242Z
+
+mc.exe: <DEBUG> HTTP/1.1 200 OK
+Content-Length: 128
+Content-Type: application/xml
+Date: Thu, 22 Oct 2026 18:32:42 GMT
+Vary: Origin
+
+mc.exe: <DEBUG> Response Time:  1.568ms
+
+mc.exe: <DEBUG> HEAD 
+/sgns-spike/sgns-s3d-spike/20261022T143209-489631609747900 HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: MinIO (windows; amd64) minio-go/v7.0.90 
+mc.exe/RELEASE.2025-08-13T08-35-41Z
+Authorization: AWS4-HMAC-SHA256 
+Credential=**REDACTED**/20261022/us-east-1/s3/aws4_request, 
+SignedHeaders=host;x-amz-checksum-mode;x-amz-content-sha256;x-amz-date, 
+Signature=**REDACTED**
+X-Amz-Checksum-Mode: ENABLED
+X-Amz-Content-Sha256: 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+X-Amz-Date: 20261022T183242Z
+
+mc.exe: <DEBUG> HTTP/1.1 200 OK
+Content-Length: 38
+Accept-Ranges: bytes
+Content-Type: application/octet-stream
+Date: Thu, 22 Oct 2026 18:32:42 GMT
+Etag: "2fc3a566d2d1360552676ad2495e28d2"
+Last-Modified: Thu, 22 Oct 2026 18:32:09 GMT
+Vary: Origin
+
+mc.exe: <DEBUG> Response Time:  0s
+
+mc.exe: <DEBUG> GET /sgns-spike/sgns-s3d-spike/20261022T143209-489631609747900 
+HTTP/1.1
+Host: 127.0.0.1:8000
+User-Agent: MinIO (windows; amd64) minio-go/v7.0.90 
+mc.exe/RELEASE.2025-08-13T08-35-41Z
+Accept-Encoding: identity
+Authorization: AWS4-HMAC-SHA256 
+Credential=**REDACTED**/20261022/us-east-1/s3/aws4_request, 
+SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=**REDACTED**
+X-Amz-Content-Sha256: 
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+X-Amz-Date: 20261022T183242Z
+
+mc.exe: <DEBUG> HTTP/1.1 200 OK
+Content-Length: 38
+Accept-Ranges: bytes
+Content-Type: application/octet-stream
+Date: Thu, 22 Oct 2026 18:32:42 GMT
+Etag: "2fc3a566d2d1360552676ad2495e28d2"
+Last-Modified: Thu, 22 Oct 2026 18:32:09 GMT
+Vary: Origin
+
+mc.exe: <DEBUG> Response Time:  507.7??s
+
+s3d spike payload - conditional create
+
+

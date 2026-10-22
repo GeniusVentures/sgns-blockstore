@@ -1,0 +1,1 @@
+{"pendingObjects":1,"pendingSize":38,"uploadedObjects":0,"uploadedSize":0,"unpinnedObjects":0,"failedUploads":0,"orphanedObjects":0,"multipartUploads":0,"bufferUsed":38,"bufferLimit":10737418240,"transfer":{"ingressActive":0,"ingressBytes":38,"ingressRate":0,"uploadBytes":0,"uploadRate":0}}

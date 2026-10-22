@@ -1,0 +1,17 @@
+s3d spike evidence - SDK error shapes
+Captured: 2026-10-22 14:33:47 -04:00 (dev session, live endpoint 127.0.0.1)
+Endpoint host: 127.0.0.1 (S3 API :8000, admin :8001; plain-HTTP loopback lane)
+
+s3d version:
+s3d v0.2.1
+Commit: 312789a
+Build Date: 2026-10-06 15:03:38 -0400 EDT
+
+--- Conditional re-PUT (412) mapper shape ---
+11: [SGNS_BLOCKSTORE][S3D-TIER][EVIDENCE] conditional-reput raw SDK error: PreconditionFailed: At least one specified precondition did not hold.
+11: [SGNS_BLOCKSTORE][S3D-TIER][EVIDENCE] adapter classification: alreadyPresent=true (success slot)
+11: [SGNS_BLOCKSTORE][S3D-TIER][EVIDENCE] head-missing classified: authoritative absence (success slot, exists=false)
+
+Interpretation: s3d v0.2.1 renders the create-only 412 as an XML body that the SDK surfaces as the 'PreconditionFailed: ...' string prefix - mapper SHAPE 1 of the three observed at minio-cpp v1.0.0 (MinioS3Client.cpp IsPreconditionFailure first branch). The adapter absorbs it to the SUCCESS slot with alreadyPresent=true (D-02); a third re-put returned alreadyPresent again (idempotent at the live endpoint).
+HEAD-missing: s3d's StatObject error string classifies NATIVELY as authoritative absence (NoSuchKey: prefix) - the adapter returned the SUCCESS slot exists=false. D-05 contingency NOT needed (no IsAuthoritativeAbsence extension required at v0.2.1).
+
