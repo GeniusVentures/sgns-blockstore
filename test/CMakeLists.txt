@@ -137,5 +137,26 @@ if(WIN32)
     target_link_libraries(s3d_spike_test ws2_32)
 endif()
 
+# S3D-01/SC3 opt-in MinIO-binary store tier (Phase 4, 04-03): the real
+# MinioS3Client -> S3BlockStore composition against the env-gated local
+# MinIO community binary (SGNS_BLOCKSTORE_TEST_MINIO_BIN). Runtime skip
+# never a CMake gate, no Docker, no auto-download; harness instantiated
+# UNCHANGED from Phase 3.
+addtest(s3_block_store_minio_test
+    s3_block_store_minio_test.cpp
+    MinioServerHarness.cpp
+)
+target_include_directories(s3_block_store_minio_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(s3_block_store_minio_test
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+    OpenSSL::Crypto
+    OpenSSL::SSL
+)
+if(WIN32)
+    target_link_libraries(s3_block_store_minio_test ws2_32)
+endif()
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
