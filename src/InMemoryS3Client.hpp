@@ -20,6 +20,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -46,7 +47,34 @@ namespace sgns::blockstore
         void SetFault(S3Op op, S3FaultKind kind);
 
         /**
-         * @brief Clear every scripted fault.
+         * @brief Script a fault for ONE key + op kind - the key-scoped
+         *        overlay consulted BEFORE the op-level table: a keyed
+         *        fault wins over the op-wide setting for that key while
+         *        every other key keeps the op-wide behavior (D-05(c):
+         *        "exactly one item fails inside a single drain" becomes
+         *        mechanically expressible). kind == None clears the
+   *        entry; ClearFaults clears BOTH tables.
+         * @note CONFORMANCE-TEST SEAM: production code MUST NOT call this.
+         */
+        void SetFaultForKey(const std::string& key, S3Op op,
+                            S3FaultKind kind);
+
+        /**
+         * @brief Serve one key's Get from the SUCCESS slot with its
+         *        first stored byte XOR-flipped (skipped when the stored
+         *        value is empty). The ADAPTER succeeds - S3BlockStore's
+         *        CID verification is the detector (the D-08 layer split;
+         *        this is deliberately NOT an S3FaultKind: CorruptData
+         *        returns a Corrupt FAILURE from the adapter and stays
+         *        exactly as-is).
+         * @note CONFORMANCE-TEST SEAM: production code MUST NOT call this.
+         */
+        void SetFlipBytesForKey(const std::string& key, bool enabled);
+
+        /**
+         * @brief Clear every scripted fault (BOTH tables: the op-level
+         *        table and the key-scoped overlay; the flip set clears
+         *        per key via SetFlipBytesForKey(key, false)).
          * @note CONFORMANCE-TEST SEAM: production code MUST NOT call this.
          */
         void ClearFaults();
@@ -72,12 +100,21 @@ namespace sgns::blockstore
         result<void, BlockStatus> Delete(const std::string& key) override;
 
     private:
-        /// @brief Taxonomy outcome for the scripted fault, or nullopt when
-        ///        the op is unfaulted (FaultGate philosophy).
-        std::optional<BlockStatus> FaultGate(S3Op op) const;
+        /// @brief Taxonomy outcome for the scripted fault - the KEY-scoped
+        ///        overlay first (key-scoped precedence), then the op-level
+        ///        table - or nullopt when unfaulted (FaultGate philosophy).
+        std::optional<BlockStatus> FaultGate(const std::string& key,
+                                             S3Op op) const;
+
+        /// @brief Map a scripted S3FaultKind to its taxonomy outcome.
+        static std::optional<BlockStatus> FaultFor(S3FaultKind kind);
 
         mutable std::mutex mutex_;
         std::map<std::string, std::vector<uint8_t>> objects_;
+        /// @brief Key-scoped fault overlay, consulted BEFORE faults_.
+        std::map<std::string, std::array<S3FaultKind, 4>> key_faults_;
+        /// @brief Keys whose Get success slot serves a flipped copy.
+        std::set<std::string> flip_keys_;
         std::array<S3FaultKind, 4> faults_ = {
             S3FaultKind::None, S3FaultKind::None,
             S3FaultKind::None, S3FaultKind::None,

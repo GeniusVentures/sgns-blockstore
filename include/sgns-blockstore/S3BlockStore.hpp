@@ -117,10 +117,24 @@ namespace sgns::blockstore
         result<Block, BlockStatus> Get(
             const Cid& cid, const ReadOptions& options = {}) override;
 
-        /** @copydoc BlockStore::Has() */
+        /**
+         * @copydoc BlockStore::Has()
+         *
+         * D-12 (Phase 5) honesty note: Has is NOT content-verifying -
+         * it reads HEAD metadata only, so an object whose bytes fail
+         * CID verification still reports exists. Corruption detection
+         * rides the Get path (verification-at-fetch).
+         */
         result<bool, BlockStatus> Has(const Cid& cid) override;
 
-        /** @copydoc BlockStore::GetSize() */
+        /**
+         * @copydoc BlockStore::GetSize()
+         *
+         * D-12 (Phase 5) honesty note: GetSize is NOT content-verifying
+         * - it reads HEAD metadata only, so a corrupted or wrong-length
+         * object still reports its stored size. Corruption detection
+         * rides the Get path (verification-at-fetch).
+         */
         result<uint64_t, BlockStatus> GetSize(const Cid& cid) override;
 
         /** @copydoc BlockStore::PutMany() */

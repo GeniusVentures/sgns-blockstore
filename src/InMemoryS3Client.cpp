@@ -23,10 +23,39 @@ namespace sgns::blockstore
         faults_[OpIndex(op)] = kind;
     }
 
+    void InMemoryS3Client::SetFaultForKey(const std::string& key, S3Op op,
+                                          S3FaultKind kind)
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (kind == S3FaultKind::None)
+        {
+            // None per key/op CLEARS the entry - the key falls back to
+            // the op-level table.
+            key_faults_.erase(key);
+            return;
+        }
+        key_faults_[key][OpIndex(op)] = kind;
+    }
+
+    void InMemoryS3Client::SetFlipBytesForKey(const std::string& key,
+                                              bool enabled)
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (enabled)
+        {
+            flip_keys_.insert(key);
+        }
+        else
+        {
+            flip_keys_.erase(key);
+        }
+    }
+
     void InMemoryS3Client::ClearFaults()
     {
         std::lock_guard<std::mutex> guard(mutex_);
         faults_.fill(S3FaultKind::None);
+        key_faults_.clear(); // BOTH tables clear on the bulk clear
     }
 
     std::vector<std::string> InMemoryS3Client::ObjectKeys() const
@@ -41,9 +70,9 @@ namespace sgns::blockstore
         return keys; // already sorted (std::map's ordering guarantee)
     }
 
-    std::optional<BlockStatus> InMemoryS3Client::FaultGate(S3Op op) const
+    std::optional<BlockStatus> InMemoryS3Client::FaultFor(S3FaultKind kind)
     {
-        switch (faults_[OpIndex(op)])
+        switch (kind)
         {
             case S3FaultKind::Unavailable:
                 return BlockStatus{StatusClass::TemporarilyUnavailable,
@@ -63,12 +92,29 @@ namespace sgns::blockstore
         return std::nullopt;
     }
 
+    std::optional<BlockStatus> InMemoryS3Client::FaultGate(
+        const std::string& key, S3Op op) const
+    {
+        // Key-scoped overlay FIRST (documented precedence): a keyed
+        // fault wins over the op-wide setting for that key; other keys
+        // keep the op-wide behavior.
+        const auto keyed = key_faults_.find(key);
+        if (keyed != key_faults_.end())
+        {
+            if (auto gate = FaultFor(keyed->second[OpIndex(op)]))
+            {
+                return gate;
+            }
+        }
+        return FaultFor(faults_[OpIndex(op)]);
+    }
+
     result<S3PutResult, BlockStatus> InMemoryS3Client::Put(
         const std::string& key, const std::vector<uint8_t>& bytes,
         const PutObjectOptions& options)
     {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (auto gate = FaultGate(S3Op::Put))
+        if (auto gate = FaultGate(key, S3Op::Put))
         {
             return gate.value();
         }
@@ -86,7 +132,7 @@ namespace sgns::blockstore
     result<S3Object, BlockStatus> InMemoryS3Client::Get(const std::string& key)
     {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (auto gate = FaultGate(S3Op::Get))
+        if (auto gate = FaultGate(key, S3Op::Get))
         {
             return gate.value();
         }
@@ -96,6 +142,16 @@ namespace sgns::blockstore
             return BlockStatus{StatusClass::NotFound, BlockSource::Remote,
                                "S3 object not found: " + key};
         }
+        // Gap-B scripting seam: serve the SUCCESS slot with the first
+        // stored byte XOR-flipped - the adapter succeeds, the store's
+        // CID verification detects (D-08 layer split). Skipped for
+        // empty values (nothing to flip).
+        if (flip_keys_.find(key) != flip_keys_.end() && !it->second.empty())
+        {
+            std::vector<uint8_t> flipped = it->second;
+            flipped[0] = static_cast<uint8_t>(flipped[0] ^ 0xFF);
+            return S3Object{ key, std::move(flipped) };
+        }
         return S3Object{ key, it->second };
     }
 
@@ -103,7 +159,7 @@ namespace sgns::blockstore
         const std::string& key)
     {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (auto gate = FaultGate(S3Op::Head))
+        if (auto gate = FaultGate(key, S3Op::Head))
         {
             return gate.value();
         }
@@ -120,7 +176,7 @@ namespace sgns::blockstore
     result<void, BlockStatus> InMemoryS3Client::Delete(const std::string& key)
     {
         std::lock_guard<std::mutex> guard(mutex_);
-        if (auto gate = FaultGate(S3Op::Delete))
+        if (auto gate = FaultGate(key, S3Op::Delete))
         {
             return gate.value();
         }

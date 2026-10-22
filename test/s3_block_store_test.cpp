@@ -244,6 +244,111 @@ TEST_F(S3BlockStoreTest, GetWrongBytesAtDerivedKeyIsCorruptRemote)
 }
 
 /**
+ * @given a stored block and the fake's success-slot flip armed at the
+ *        derived key (the adapter SUCCEEDS with a first-byte-flipped
+ *        copy - the store's CID verification is the detector, D-08/D-10)
+ * @when the store Gets the CID twice, then the flip is disarmed and it
+ *        Gets again
+ * @then BOTH Gets fail Corrupt+Remote with op context (every Get
+ *        re-fetches - no bad-byte cache, D-11), the post-repair Get
+ *        succeeds with the original bytes (no sticky negative cache,
+ *        D-06 inline recovery), and the fake still holds the key - the
+ *        remote block was NEVER deleted (CORE-05: repair is external)
+ */
+TEST_F(S3BlockStoreTest,
+       GetScriptedFlipIsCorruptRemoteReFetchStaysCorruptAndRecoversInline)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload = "scripted flip corruption payload";
+    const auto cid = MakeCid(payload);
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    // Derive the key in-test exactly as the store does (the
+    // GetWrongBytesAtDerivedKeyIsCorruptRemote computation).
+    auto cid_string =
+        libp2p::multi::ContentIdentifierCodec::toString(cid);
+    ASSERT_TRUE(cid_string);
+    const auto digest = cid.content_address.getHash();
+    static const char* kHex = "0123456789abcdef";
+    const std::string fanout{
+        kHex[digest[0] >> 4], kHex[digest[0] & 0x0F]};
+    const std::string key = "v1/blocks/raw/" + fanout + "/"
+        + cid_string.value();
+
+    fake_->SetFlipBytesForKey(key, true);
+    auto got = store_->Get(cid);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, sgns::blockstore::StatusClass::Corrupt);
+    EXPECT_EQ(got.error().source, sgns::blockstore::BlockSource::Remote);
+    EXPECT_NE(got.error().message.find("Get"),
+              std::string::npos); // op context present
+
+    // D-11: every Get re-fetches - the second Get is STILL Corrupt
+    // (no bad-byte cache at the store layer).
+    auto again = store_->Get(cid);
+    ASSERT_FALSE(again);
+    EXPECT_EQ(again.error().code, sgns::blockstore::StatusClass::Corrupt);
+    EXPECT_EQ(again.error().source, sgns::blockstore::BlockSource::Remote);
+
+    // D-06 inline recovery: repair (disarm the flip) -> good fetch in
+    // the SAME test - no sticky negative cache.
+    fake_->SetFlipBytesForKey(key, false);
+    auto recovered = store_->Get(cid);
+    ASSERT_TRUE(recovered);
+    EXPECT_EQ(recovered.value().bytes,
+              std::vector<uint8_t>(payload.begin(), payload.end()));
+
+    // CORE-05/D-11: the remote block was NEVER deleted - the corrupt
+    // object stayed in place through every failing Get.
+    const auto keys = fake_->ObjectKeys();
+    const std::set<std::string> held(keys.begin(), keys.end());
+    EXPECT_EQ(held.count(key), 1u);
+}
+
+/**
+ * @given a complete-but-wrong-length body: a one-byte-short copy of the
+ *        payload planted at the derived key through the fake
+ * @when the store Gets that CID
+ * @then the failure is Corrupt+Remote with op context - exact-byte CID
+ *        verification has no length tolerance, and this store-layer
+ *        assertion is the D-08 split's store half (the transport half
+ *        - a mid-read framing break - lives in minio_s3_client_test)
+ */
+TEST_F(S3BlockStoreTest, GetTruncatedRemoteBodyIsCorruptRemote)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload = "truncated remote body probe payload";
+    const auto cid = MakeCid(payload);
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    auto cid_string =
+        libp2p::multi::ContentIdentifierCodec::toString(cid);
+    ASSERT_TRUE(cid_string);
+    const auto digest = cid.content_address.getHash();
+    static const char* kHex = "0123456789abcdef";
+    const std::string fanout{
+        kHex[digest[0] >> 4], kHex[digest[0] & 0x0F]};
+    const std::string key = "v1/blocks/raw/" + fanout + "/"
+        + cid_string.value();
+
+    // One byte short of the payload (string iterators - never
+    // gsl::span iterator temporaries, the MSVC debug landmine).
+    const std::vector<uint8_t> short_bytes(payload.begin(),
+                                           payload.end() - 1);
+    auto planted = fake_->Put(key, short_bytes);
+    ASSERT_TRUE(planted);
+
+    auto got = store_->Get(cid);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, sgns::blockstore::StatusClass::Corrupt);
+    EXPECT_EQ(got.error().source, sgns::blockstore::BlockSource::Remote);
+    EXPECT_NE(got.error().message.find("Get"),
+              std::string::npos); // op context present
+}
+
+/**
  * @given Get with verify disabled (ReadOptions::verify == false)
  * @when wrong bytes sit at the derived key
  * @then the store returns the planted bytes unrejected - the seam is
