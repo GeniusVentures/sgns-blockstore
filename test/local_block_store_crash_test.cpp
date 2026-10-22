@@ -21,6 +21,19 @@
  *    avoid_flush_during_shutdown=true the close-then-reopen path is
  *    crash-faithful, and any flush/sync would silently convert these
  *    proofs into no-ops (RESEARCH Pitfall 2).
+ *
+ * FOUR-STATE WINDOW MODEL (Phase 5, D-02): SC2's three named kill
+ * windows (kill between local commit and remote upload / mid-temp-write
+ * / post-upload) map onto FOUR real states - pre-commit
+ * (CrashBeforeCommitLeavesNothing), pending
+ * (CrashAfterCommitRecoversBlockAndPending), uploaded-but-unmarked
+ * (CrashAfterRemoteUploadBeforeMarkReconcilesViaReDrain), and accepted
+ * (AcceptedStateIsStableAndReDrainIsNoOp). The mid-write state DOES NOT
+ * EXIST: Phase-2 D-02's single atomic WriteBatch makes an interrupted
+ * local write a crash-before-WAL-commit with NOTHING visible - that
+ * absence IS the atomicity proof. Remote-tier states (3 and 4) run
+ * against the InMemoryS3Client fake, which persists in-process across
+ * the local store's reopen (D-04 - no MinIO binary, no s3d here).
  */
 
 #include <gtest/gtest.h>
@@ -36,6 +49,10 @@
 #include <sgns-blockstore/Cid.hpp>
 #include <sgns-blockstore/FaultController.hpp>
 #include <sgns-blockstore/LocalBlockStore.hpp>
+#include <sgns-blockstore/S3BlockStore.hpp>
+#include <sgns-blockstore/UploadDrainer.hpp>
+
+#include "InMemoryS3Client.hpp"
 
 #include <libp2p/multi/content_identifier_codec.hpp>
 #include <libp2p/multi/multicodec_type.hpp>
@@ -47,9 +64,12 @@ namespace
     using sgns::blockstore::Cid;
     using sgns::blockstore::CidOf;
     using sgns::blockstore::CrashPoint;
+    using sgns::blockstore::DrainPendingUploads;
     using sgns::blockstore::FaultKind;
+    using sgns::blockstore::InMemoryS3Client;
     using sgns::blockstore::LocalBlockStore;
     using sgns::blockstore::LocalBlockStoreOptions;
+    using sgns::blockstore::S3BlockStore;
     using sgns::blockstore::StatusClass;
     using sgns::blockstore::UploadState;
     using libp2p::multi::MulticodecType;
@@ -326,4 +346,125 @@ TEST_F(LocalBlockStoreCrashTest, VacuousSweepDocumentationHolds)
               pending.value().end());
     EXPECT_TRUE(reopened2->Get(cid_a_));
     EXPECT_TRUE(reopened2->Get(cid_c));
+}
+
+// ===================================================================
+// Four-state crash matrix completion (Phase 5, Plan 05-02 Task 2:
+// states 3 and 4 + the D-02 window model in the banner above)
+// ===================================================================
+
+/**
+ * @given state 3 of the D-02 four-state window model - the
+ *        uploaded-but-unmarked window: a block committed locally AND
+ *        already pushed to the remote, but the Accepted journal mark
+ *        never ran (the kill landed between remote upload and mark)
+ * @when the local store reopens (no-flush close + WAL replay = the
+ *        crash) and the drain re-runs
+ * @then reconciliation surfaces the pending upload (journal still
+ *        PendingUpload, pending set == {cid}); the re-drain's
+ *        createOnly Put hits the existing object and returns the
+ *        SUCCESS slot with alreadyPresent == true (idempotent
+ *        convergence, Phase-1 D-04 / Phase-4 D-03); the journal
+ *        advances to UploadedAccepted, the pending set empties, and
+ *        both tiers return the CID-verified bytes
+ */
+TEST_F(LocalBlockStoreCrashTest,
+       CrashAfterRemoteUploadBeforeMarkReconcilesViaReDrain)
+{
+    const std::string dir = NextUniqueDir();
+    // The fake-backed remote persists in-process across the local
+    // store's reopen (D-04 - the remote tier never "crashes" here).
+    auto fake = std::make_shared<InMemoryS3Client>();
+    auto opened_remote = S3BlockStore::Open(fake);
+    ASSERT_TRUE(opened_remote);
+    auto remote = std::move(opened_remote.value());
+    {
+        auto store = MakeStore(dir);
+        ASSERT_NE(store, nullptr);
+        ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_)));
+        // Push the SAME block straight to the remote WITHOUT the
+        // drainer mark - this IS the uploaded-but-unmarked window.
+        ASSERT_TRUE(remote->Put(cid_a_, SpanOf(payload_a_)));
+    } // destruction: no-flush close - the "crash" between upload and mark
+
+    auto reopened = ReopenStore(dir);
+    ASSERT_NE(reopened, nullptr);
+    auto state = reopened->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::PendingUpload);
+    auto pending = reopened->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u);
+    EXPECT_EQ(pending.value()[0], cid_a_);
+
+    // Reconciliation: the re-drain converges through the idempotent
+    // createOnly re-put (alreadyPresent in the success slot).
+    auto drained = DrainPendingUploads(*reopened, *remote);
+    ASSERT_TRUE(drained);
+    ASSERT_EQ(drained.value().size(), 1u);
+    ASSERT_TRUE(drained.value()[0].upload);
+    EXPECT_TRUE(drained.value()[0].upload.value().alreadyPresent);
+    ASSERT_TRUE(drained.value()[0].journal);
+
+    auto after = reopened->GetUploadState(cid_a_);
+    ASSERT_TRUE(after);
+    EXPECT_EQ(after.value(), UploadState::UploadedAccepted);
+    auto pending_after = reopened->GetPendingUploads();
+    ASSERT_TRUE(pending_after);
+    EXPECT_TRUE(pending_after.value().empty());
+
+    auto local_got = reopened->Get(cid_a_);
+    ASSERT_TRUE(local_got);
+    EXPECT_EQ(local_got.value().bytes,
+              std::vector<uint8_t>(payload_a_.begin(), payload_a_.end()));
+    auto remote_got = remote->Get(cid_a_);
+    ASSERT_TRUE(remote_got); // presence oracle - the object survived
+}
+
+/**
+ * @given state 4 of the D-02 four-state window model - the accepted
+ *        state: a fully drained block (remote upload AND the Accepted
+ *        journal mark both landed)
+ * @when the local store reopens (no-flush close + WAL replay = the
+ *        crash) and the drain runs again
+ * @then the accepted state is stable across recovery - GetUploadState
+ *        == UploadedAccepted, pending set empty, block retrievable
+ *        CID-verified - and the second drain is a NO-OP: nothing
+ *        pending, nothing attempted, empty result vector (idempotency)
+ */
+TEST_F(LocalBlockStoreCrashTest, AcceptedStateIsStableAndReDrainIsNoOp)
+{
+    const std::string dir = NextUniqueDir();
+    auto fake = std::make_shared<InMemoryS3Client>();
+    auto opened_remote = S3BlockStore::Open(fake);
+    ASSERT_TRUE(opened_remote);
+    auto remote = std::move(opened_remote.value());
+    {
+        auto store = MakeStore(dir);
+        ASSERT_NE(store, nullptr);
+        ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_)));
+        auto drained = DrainPendingUploads(*store, *remote);
+        ASSERT_TRUE(drained);
+        ASSERT_EQ(drained.value().size(), 1u);
+        ASSERT_TRUE(drained.value()[0].upload);
+        ASSERT_TRUE(drained.value()[0].journal); // the Accepted mark landed
+    } // destruction: no-flush close
+
+    auto reopened = ReopenStore(dir);
+    ASSERT_NE(reopened, nullptr);
+    auto state = reopened->GetUploadState(cid_a_);
+    ASSERT_TRUE(state);
+    EXPECT_EQ(state.value(), UploadState::UploadedAccepted);
+    auto pending = reopened->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    EXPECT_TRUE(pending.value().empty());
+    auto got = reopened->Get(cid_a_);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got.value().bytes,
+              std::vector<uint8_t>(payload_a_.begin(), payload_a_.end()));
+
+    // No-op idempotency: nothing pending -> nothing attempted.
+    auto re_drained = DrainPendingUploads(*reopened, *remote);
+    ASSERT_TRUE(re_drained);
+    EXPECT_TRUE(re_drained.value().empty());
 }
