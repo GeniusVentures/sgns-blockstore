@@ -1,0 +1,6 @@
+--- before-drain ---
+{"pendingObjects":0,"pendingSize":0,"uploadedObjects":1,"uploadedSize":38,"unpinnedObjects":0,"failedUploads":0,"orphanedObjects":0,"multipartUploads":0,"bufferUsed":0,"bufferLimit":10737418240,"transfer":{"ingressActive":0,"ingressBytes":38,"ingressRate":0,"uploadBytes":38,"uploadRate":0}}
+--- after-drain ---
+{"pendingObjects":1,"pendingSize":48,"uploadedObjects":1,"uploadedSize":38,"unpinnedObjects":0,"failedUploads":0,"orphanedObjects":0,"multipartUploads":0,"bufferUsed":48,"bufferLimit":10737418240,"transfer":{"ingressActive":0,"ingressBytes":86,"ingressRate":0,"uploadBytes":38,"uploadRate":0}}
+--- after-flush (closure observation only - no durability claim) ---
+{"pendingObjects":0,"pendingSize":0,"uploadedObjects":2,"uploadedSize":86,"unpinnedObjects":0,"failedUploads":0,"orphanedObjects":0,"multipartUploads":0,"bufferUsed":0,"bufferLimit":10737418240,"transfer":{"ingressActive":0,"ingressBytes":86,"ingressRate":0,"uploadBytes":86,"uploadRate":0}}
