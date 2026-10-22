@@ -158,5 +158,26 @@ if(WIN32)
     target_link_libraries(s3_block_store_minio_test ws2_32)
 endif()
 
+# S3D-02/SC4 dev-gated two-run E2E (Phase 4, 04-03): ONE binary, TWO
+# GTest cases, TWO SEPARATE INVOCATIONS via --gtest_filter - two
+# invocations ARE the two fresh processes; running it once as one
+# ctest pass is NOT the proof. Run A (S3dE2E.UploadRun): local Put ->
+# DrainPendingUploads -> s3d, journal asserted Accepted-level. Run B
+# (S3dE2E.VerifyRun): honest cold retrieval - no local store anywhere.
+# Dev-gated S3D-TIER (runtime skip, never CI); the binary only
+# connects - it never spawns or manages s3d (D-08).
+addtest(s3d_roundtrip_e2e s3d_roundtrip_e2e.cpp)
+target_include_directories(s3d_roundtrip_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(s3d_roundtrip_e2e
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+    OpenSSL::Crypto
+    OpenSSL::SSL
+)
+if(WIN32)
+    target_link_libraries(s3d_roundtrip_e2e ws2_32)
+endif()
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
