@@ -25,14 +25,15 @@ target_link_libraries(local_block_store_test
 set_tests_properties(local_block_store_test PROPERTIES LABELS "Tier1")
 target_include_directories(local_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
 
-# Crash suite links RocksDB DIRECTLY for the raw second-handle corruption
-# forge - test-surface-only privilege; the installed library's public link
-# surface is unchanged.
+# Crash suite (states 3/4 of the Phase-5 four-state matrix reach the
+# InMemoryS3Client fake - test-surface-only src/ privilege,
+# in_memory_s3_client_test precedent; the raw second-handle RocksDB
+# link was retired with the D-09 corrupt-after-commit hook).
 addtest(local_block_store_crash_test local_block_store_crash_test.cpp)
+target_include_directories(local_block_store_crash_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(local_block_store_crash_test
     sgns-blockstore
     p2p::p2p_cid
-    RocksDB::rocksdb
 )
 set_tests_properties(local_block_store_crash_test PROPERTIES LABELS "Tier1")
 

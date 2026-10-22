@@ -259,6 +259,29 @@ namespace sgns::blockstore
          */
         void SetCrashPointForTesting(CrashPoint point);
 
+        /**
+         * @brief Arm the TEST-ONLY corrupt-after-commit hook (D-09).
+         *
+         * Concrete method on the backend type ONLY - the frozen
+         * FaultController surface is untouched (the kit's CorruptData
+         * fault corrupts only the returned copy; this hook corrupts REAL
+         * stored bytes). When armed, the NEXT successful Put of a NEW
+         * block returns success as usual while the committed block bytes
+         * are corrupted in place after the WriteBatch lands: the store's
+         * OWN handles read the just-committed value back, flip its first
+         * byte, and write it back with sync=true - so the corruption
+         * survives the no-flush close+reopen the crash suite uses as its
+         * crash oracle. Never fires on the already_present re-Put path,
+         * never touches the journal column family, and is never routed
+         * through the fault_/FaultGate seam. PRODUCTION CODE MUST NEVER
+         * CALL THIS - arming it on real stored data is the catastrophic
+         * misuse.
+         *
+         * @param armed true arms the hook for the next new-block Put
+         *        (false disarms)
+         */
+        void SetCorruptAfterCommitForTesting(bool armed);
+
     private:
         LocalBlockStore(); // construction goes through Open()
 
@@ -271,6 +294,7 @@ namespace sgns::blockstore
         std::unique_ptr<Impl> impl_;
         FaultKind fault_ = FaultKind::None; ///< conformance seam state (never read by production paths)
         CrashPoint crash_point_ = CrashPoint::None; ///< test-only crash seam state (D-07)
+        bool corrupt_after_commit_ = false; ///< test-only corrupt-after-commit seam state (D-09)
     };
 }
 

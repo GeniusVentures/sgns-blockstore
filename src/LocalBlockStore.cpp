@@ -361,6 +361,34 @@ namespace sgns::blockstore
         {
             return MapStatus(committed, "Put: batch commit failed");
         }
+
+        // D-09 test seam: corrupt the just-committed block IN PLACE -
+        // after the atomic commit gate, before the caller sees success.
+        // The store's OWN handles round-trip the value (no second DB
+        // open, no CF-name string crossing the API) and the write-back
+        // rides impl_->wo_ (sync=true) so the corruption survives the
+        // no-flush close+reopen the crash suite uses as its oracle.
+        // NEVER touches the journal CF, never fires on the
+        // already_present re-Put path, never routed through
+        // fault_/FaultGate (the kit's CorruptData corrupts only the
+        // returned copy and must never evict). PRODUCTION CODE MUST
+        // NEVER ARM THIS.
+        if (corrupt_after_commit_ && !already_present)
+        {
+            std::string committed_value;
+            const auto read_back = impl_->db_->Get(
+                impl_->ro_, impl_->blocks_, KeySlice(key.value()),
+                &committed_value);
+            if (read_back.ok() && !committed_value.empty())
+            {
+                committed_value[0] = static_cast<char>(
+                    static_cast<uint8_t>(committed_value[0]) ^ 0xFF);
+                (void)impl_->db_->Put(
+                    impl_->wo_, impl_->blocks_, KeySlice(key.value()),
+                    rocksdb::Slice(committed_value.data(),
+                                   committed_value.size()));
+            }
+        }
         return PutOutcome{DurabilityLevel::LocalCommitted, already_present};
     }
 
@@ -595,6 +623,11 @@ namespace sgns::blockstore
     void LocalBlockStore::SetCrashPointForTesting(CrashPoint point)
     {
         crash_point_ = point;
+    }
+
+    void LocalBlockStore::SetCorruptAfterCommitForTesting(bool armed)
+    {
+        corrupt_after_commit_ = armed;
     }
 
     FaultKind LocalBlockStore::GetFault() const

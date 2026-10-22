@@ -40,9 +40,6 @@
 #include <libp2p/multi/content_identifier_codec.hpp>
 #include <libp2p/multi/multicodec_type.hpp>
 
-#include <rocksdb/db.h>
-#include <rocksdb/options.h>
-
 namespace
 {
     using sgns::blockstore::BlockSource;
@@ -96,58 +93,6 @@ namespace
         return ReopenStore(dir);
     }
 
-    /// Real on-disk corruption: open a RAW second RocksDB handle on the
-    /// same directory (the LocalBlockStore instance must already be
-    /// closed - its Close released the LOCK), flip a byte of the stored
-    /// blocks-CF value under the CID's key, full teardown. This is the
-    /// only way to produce genuine stored-bytes corruption; the
-    /// test-surface-only RocksDB link never leaks into the installed
-    /// library's public surface.
-    void CorruptStoredBlock(const std::string& dir, const Cid& cid)
-    {
-        auto key_encoded =
-            libp2p::multi::ContentIdentifierCodec::encode(cid);
-        ASSERT_TRUE(key_encoded);
-        const std::string key(key_encoded.value().begin(),
-                              key_encoded.value().end());
-
-        rocksdb::DBOptions db_options;
-        db_options.create_if_missing = false;
-        db_options.info_log_level = rocksdb::InfoLogLevel::ERROR_LEVEL;
-        const std::vector<rocksdb::ColumnFamilyDescriptor> cf_descriptors = {
-            rocksdb::ColumnFamilyDescriptor{},
-            {sgns::blockstore::kBlocksColumnFamilyName,
-             rocksdb::ColumnFamilyOptions()},
-            {sgns::blockstore::kUploadJournalColumnFamilyName,
-             rocksdb::ColumnFamilyOptions()},
-        };
-        std::vector<rocksdb::ColumnFamilyHandle*> handles;
-        rocksdb::DB* db = nullptr;
-        auto status = rocksdb::DB::Open(
-            db_options, dir, cf_descriptors, &handles, &db);
-        ASSERT_TRUE(status.ok());
-
-        std::string value;
-        status = db->Get(rocksdb::ReadOptions(), handles[1],
-                         rocksdb::Slice(key.data(), key.size()), &value);
-        ASSERT_TRUE(status.ok());
-        ASSERT_FALSE(value.empty());
-
-        value[0] = static_cast<char>(~value[0]); // REAL on-disk corruption
-        rocksdb::WriteOptions wo;
-        wo.sync = true;
-        status = db->Put(wo, handles[1],
-                         rocksdb::Slice(key.data(), key.size()),
-                         rocksdb::Slice(value.data(), value.size()));
-
-        // Teardown order: destroy non-default handles -> Close -> delete.
-        db->DestroyColumnFamilyHandle(handles[1]);
-        db->DestroyColumnFamilyHandle(handles[2]);
-        (void)db->Close();
-        delete db;
-        ASSERT_TRUE(status.ok());
-    }
-
     // NOTE: ContentIdentifier has no default constructor, so the CID
     // members carry member-initializers.
     class LocalBlockStoreCrashTest : public ::testing::Test
@@ -161,8 +106,9 @@ namespace
 }
 
 /**
- * @given a committed block whose stored bytes were corrupted on disk by a
- *        raw second RocksDB handle
+ * @given a committed block whose stored bytes were corrupted in place
+ *        by the D-09 corrupt-after-commit hook (the store's OWN handle,
+ *        API-only - no second RocksDB handle, no CF-name coupling)
  * @when the reopened store Gets it twice, then the caller re-Puts
  * @then the FIRST Get fails Corrupt+Local (the detecting call surfaces
  *        the corruption), the SECOND Get fails NotFound - the self-heal
@@ -177,9 +123,13 @@ TEST_F(LocalBlockStoreCrashTest, StoredCorruptionSelfHealsEvictAndSurface)
     {
         auto store = MakeStore(dir);
         ASSERT_NE(store, nullptr);
+        // D-09 hook: the Put commits successfully, then the commit tail
+        // corrupts the stored bytes in place (sync write - survives the
+        // no-flush close+reopen below).
+        store->SetCorruptAfterCommitForTesting(true);
         ASSERT_TRUE(store->Put(cid_a_, SpanOf(payload_a_)));
-    }
-    ASSERT_NO_FATAL_FAILURE(CorruptStoredBlock(dir, cid_a_));
+        store->SetCorruptAfterCommitForTesting(false);
+    } // destruction: no-flush close
 
     auto reopened = ReopenStore(dir);
     ASSERT_NE(reopened, nullptr);
