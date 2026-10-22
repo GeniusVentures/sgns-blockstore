@@ -86,6 +86,18 @@ target_link_libraries(s3_block_store_test
     p2p::p2p_cid
 )
 
+# D-01..D-04 drainer tier (Phase 4, 04-01): DrainPendingUploads against
+# a REAL LocalBlockStore draining into the fake-backed S3BlockStore.
+# Conformance-free link line (local_block_store_test shape; RocksDB
+# arrives transitively through the library); src/ privilege reaches the
+# fake.
+addtest(upload_drainer_test upload_drainer_test.cpp)
+target_include_directories(upload_drainer_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(upload_drainer_test
+    sgns-blockstore
+    p2p::p2p_cid
+)
+
 # D-08 stub fault matrix against the REAL MinioS3Client + the env-gated
 # MinIO-binary live tier (03-03). Hermetic matrix runs in the default CI
 # lane; live cases runtime-skip loudly when the env gate is unset.

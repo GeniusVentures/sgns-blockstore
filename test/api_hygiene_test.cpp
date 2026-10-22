@@ -58,6 +58,7 @@
 #include <sgns-blockstore/MemoryBlockStore.hpp>
 #include <sgns-blockstore/LocalBlockStore.hpp>
 #include <sgns-blockstore/S3BlockStore.hpp>
+#include <sgns-blockstore/UploadDrainer.hpp>
 
 namespace
 {

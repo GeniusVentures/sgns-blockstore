@@ -6,6 +6,7 @@ add_library(sgns-blockstore STATIC
     MemoryBlockStore.cpp
     MinioS3Client.cpp
     S3BlockStore.cpp
+    UploadDrainer.cpp
 )
 
 target_link_libraries(sgns-blockstore
