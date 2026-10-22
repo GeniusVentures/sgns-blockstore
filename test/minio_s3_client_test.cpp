@@ -29,7 +29,7 @@
 #include "LoopbackHttpStub.hpp"
 #include "MinioServerHarness.hpp"
 #include "MinioS3Client.hpp"
-#include "S3Client.hpp"
+#include <sgns-blockstore/S3Client.hpp>
 
 namespace
 {

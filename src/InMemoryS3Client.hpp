@@ -23,7 +23,7 @@
 #include <string>
 #include <vector>
 
-#include "S3Client.hpp"
+#include <sgns-blockstore/S3Client.hpp>
 
 namespace sgns::blockstore
 {
@@ -50,6 +50,15 @@ namespace sgns::blockstore
          * @note CONFORMANCE-TEST SEAM: production code MUST NOT call this.
          */
         void ClearFaults();
+
+        /**
+         * @brief The sorted set of stored object keys (SC1 key
+         *        observability).
+         * @return every key currently in the fake, sorted - the probe the
+         *         key-layout tests assert the BACK-07 layout against
+         * @note CONFORMANCE-TEST SEAM: production code MUST NOT call this.
+         */
+        std::vector<std::string> ObjectKeys() const;
 
         result<S3PutResult, BlockStatus> Put(
             const std::string& key,

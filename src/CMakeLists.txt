@@ -5,13 +5,15 @@ add_library(sgns-blockstore STATIC
     LocalBlockStore.cpp
     MemoryBlockStore.cpp
     MinioS3Client.cpp
+    S3BlockStore.cpp
 )
 
 target_link_libraries(sgns-blockstore
     PUBLIC p2p::p2p_cid
     PUBLIC RocksDB::rocksdb
-    # minio-cpp is PRIVATE: no installed header references it (D-04) — the
-    # S3Client adapter seam is internal until Phase 4 promotes it deliberately.
+    # minio-cpp stays PRIVATE: no installed header references it (the
+    # 03 D-04 promotion installed the SDK-free S3Client INTERFACE header;
+    # the minio-cpp-backed MinioS3Client impl and its header stay in src/).
     PRIVATE miniocpp::miniocpp
 )
 

@@ -1,12 +1,26 @@
 /**
  * @file S3Client.hpp
- * @brief INTERNAL S3 adapter seam - object-level ops behind the BlockStore
- *        facade (BACK-05, decisions D-01/D-03/D-04).
+ * @brief The S3 adapter composition seam - object-level ops behind the
+ *        BlockStore facade (BACK-05, decisions D-01/D-03/D-04).
  *
- * NOT INSTALLED (D-04): this header lives in src/ and is deliberately
- * absent from every install rule. It is promoted to an installed header
- * only with Phase 4's S3BlockStore - the first public consumer. Until
- * then the installed surface of sgns-blockstore is unchanged.
+ * INSTALLED since Phase 4 (03 D-04 honored): this header was promoted
+ * from src/ via git mv when S3BlockStore became its first public
+ * consumer - a store backend composed over an injected S3Client. The
+ * install rule (CMakeLists.txt FILES_MATCHING "*.hpp") now carries it;
+ * the impl headers (InMemoryS3Client.hpp, MinioS3Client.hpp) stay in
+ * src/ - only the interface header was promoted (04-CONTEXT boundary).
+ *
+ * CORE-05 / 03-D-03 Delete reconciliation (resolved with this
+ * promotion): CORE-05 governs the BlockStore DATA-PATH family - its
+ * guard tests enforce a delete-free store surface, and that letter is
+ * unchanged. S3Client is a COMPOSITION seam, not a data-path store:
+ * Delete IS an op here for future tooling/audit consumers, and calling
+ * it from cache/eviction logic is forbidden (local eviction is never a
+ * CRDT deletion). Rejected alternative: splitting a delete-free
+ * S3ObjectClient base for promotion - it adds surface without removing
+ * risk, because the delete-capable implementation symbols already ship
+ * in the static library. Whole-header promotion rated costly-not-one-
+ * way: the split remains available later as an additive change.
  *
  * Design constraints locked by CONTEXT (Phase 3):
  *  - D-01: ONE Put op; conditional create-only is the PutObjectOptions

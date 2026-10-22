@@ -18,7 +18,7 @@
 #include <vector>
 
 #include "InMemoryS3Client.hpp"
-#include "S3Client.hpp"
+#include <sgns-blockstore/S3Client.hpp>
 
 namespace
 {

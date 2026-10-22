@@ -25,7 +25,7 @@
 #include <memory>
 #include <type_traits>
 
-// (a) include-everything: all eleven public headers, dependency order.
+// (a) include-everything: all installed public headers, dependency order.
 // sgns-blockstore now carries a TRANSITIVE consumer dependency on RocksDB
 // (resolved through its package config's find_dependency + the PUBLIC
 // RocksDB::rocksdb link edge); this TU still links exactly
@@ -40,7 +40,10 @@
 // the SC2 no-SDK-type-in-installed-surface proof: any minio type leaking
 // into an installed header would break this TU's standalone compile
 // (header_hygiene's "minio" include ban is the complementary static
-// check). The S3Client seam itself stays internal (D-04; src/ headers,
+// check). The S3Client seam header is PROMOTED to the installed surface
+// since Phase 4 (03 D-04 honored): S3BlockStore is its first public
+// consumer, and Delete is reconciled in that header's banner as an
+// adapter-internal tooling op (CORE-05 still guards the store surface,
 // asserted by the Head/Delete negative traits below).
 #include <sgns-blockstore/Cid.hpp>
 #include <sgns-blockstore/BlockStatus.hpp>
@@ -51,8 +54,10 @@
 #include <sgns-blockstore/BlockStore.hpp>
 #include <sgns-blockstore/BlockStoreTooling.hpp>
 #include <sgns-blockstore/FaultController.hpp>
+#include <sgns-blockstore/S3Client.hpp>
 #include <sgns-blockstore/MemoryBlockStore.hpp>
 #include <sgns-blockstore/LocalBlockStore.hpp>
+#include <sgns-blockstore/S3BlockStore.hpp>
 
 namespace
 {
@@ -206,6 +211,16 @@ static_assert(!HasHead<sgns::blockstore::MemoryBlockStore>::value,
               "SC2 violation: MemoryBlockStore must not expose Head");
 static_assert(!HasHead<sgns::blockstore::LocalBlockStore>::value,
               "SC2 violation: LocalBlockStore must not expose Head");
+
+// Phase 4 (04-01): the S3 backend extends the same negative traits -
+// the store facade stays S3-shaped-name-free (Head lives on the adapter
+// seam, which the store composes) and delete-free (CORE-05 store
+// surface; the adapter's tooling-only Delete is reconciled in the
+// promoted S3Client.hpp banner).
+static_assert(!HasHead<sgns::blockstore::S3BlockStore>::value,
+              "SC2 violation: S3BlockStore must not expose Head");
+static_assert(!HasDelete<sgns::blockstore::S3BlockStore>::value,
+              "CORE-05 violation: S3BlockStore must not expose Delete");
 
 // CORE-06 structural separation: the tooling/enumeration interface is not
 // a base of the data-path interface.

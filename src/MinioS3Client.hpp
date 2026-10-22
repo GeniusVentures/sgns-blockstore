@@ -21,12 +21,13 @@
 
 #include <memory>
 
-#include "S3Client.hpp"
+#include <sgns-blockstore/S3Client.hpp>
 
 namespace sgns::blockstore
 {
     /**
-     * @brief The minio-cpp-backed S3Client (internal seam, D-04).
+     * @brief The minio-cpp-backed S3Client (impl header stays internal;
+     *     the S3Client interface it implements is installed since Phase 4).
      *
      * Constructed via Open(). Synchronous and blocking like the whole
      * Phase-3 seam - no background threads; concurrent-call guarantees

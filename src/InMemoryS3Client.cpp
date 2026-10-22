@@ -29,6 +29,18 @@ namespace sgns::blockstore
         faults_.fill(S3FaultKind::None);
     }
 
+    std::vector<std::string> InMemoryS3Client::ObjectKeys() const
+    {
+        std::lock_guard<std::mutex> guard(mutex_);
+        std::vector<std::string> keys;
+        keys.reserve(objects_.size());
+        for (const auto& entry : objects_) // std::map iterates in key order
+        {
+            keys.push_back(entry.first);
+        }
+        return keys; // already sorted (std::map's ordering guarantee)
+    }
+
     std::optional<BlockStatus> InMemoryS3Client::FaultGate(S3Op op) const
     {
         switch (faults_[OpIndex(op)])

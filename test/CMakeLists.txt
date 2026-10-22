@@ -75,6 +75,17 @@ target_link_libraries(in_memory_s3_client_test
     p2p::p2p_cid
 )
 
+# BACK-07 hermetic store tier (Phase 4, 04-01): S3BlockStore - the full
+# conformance kit + key-layout/idempotency probes over the fake. SDK-free
+# like every default-lane suite; src/ privilege reaches the fake.
+addtest(s3_block_store_test s3_block_store_test.cpp)
+target_include_directories(s3_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(s3_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
+target_link_libraries(s3_block_store_test
+    sgns-blockstore
+    p2p::p2p_cid
+)
+
 # D-08 stub fault matrix against the REAL MinioS3Client + the env-gated
 # MinIO-binary live tier (03-03). Hermetic matrix runs in the default CI
 # lane; live cases runtime-skip loudly when the env gate is unset.
