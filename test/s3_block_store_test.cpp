@@ -16,6 +16,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -140,6 +141,246 @@ TEST_F(S3BlockStoreTest, HasFalseForNeverPutCid)
     auto has = store_->Has(cid);
     ASSERT_TRUE(has);
     EXPECT_FALSE(has.value());
+}
+
+/**
+ * @given a fixture set of payloads (>= 4)
+ * @when each is Put through the store
+ * @then every derived key's fan-out component equals the two-lowercase-
+ *        hex rendering of that CID's FIRST MULTIHASH DIGEST BYTE computed
+ *        in-test from the CID, and the set demonstrates >= 2 distinct
+ *        components (the operational fan-out). Invariant: the fan-out
+ *        source is NEVER the CID string head - every raw+sha256 CIDv1
+ *        string starts with the constant prefix "bafkrei", so
+ *        string-head fan-out would collapse to exactly one bucket.
+ */
+TEST_F(S3BlockStoreTest, FanoutComponentIsFirstDigestByteHex)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::vector<std::string> payloads = {
+        "fanout fixture one", "fanout fixture two - longer",
+        "fanout fixture three", "fanout fixture four !!",
+    };
+    static const char* kHex = "0123456789abcdef";
+    std::set<std::string> distinct_components;
+    for (const auto& payload : payloads)
+    {
+        const auto cid = MakeCid(payload);
+        ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+        const auto digest = cid.content_address.getHash();
+        ASSERT_FALSE(digest.empty());
+        const auto first = digest[0];
+        const std::string expected_fanout{
+            kHex[first >> 4], kHex[first & 0x0F]};
+
+        const auto keys = fake_->ObjectKeys();
+        ASSERT_EQ(keys.size(), 1u); // fresh fake check is per-iteration;
+        // rebuild below uses cumulative assertion via per-case store
+        for (const auto& key : keys)
+        {
+            // key = <prefix>/<codec>/<xx>/<cid> - the fan-out component
+            // is the second-to-last path segment.
+            const auto last_slash = key.rfind('/');
+            ASSERT_NE(last_slash, std::string::npos);
+            const auto rest = key.substr(0, last_slash);
+            const auto prev_slash = rest.rfind('/');
+            ASSERT_NE(prev_slash, std::string::npos);
+            EXPECT_EQ(key.substr(prev_slash + 1,
+                                 last_slash - prev_slash - 1),
+                      expected_fanout);
+            distinct_components.insert(
+                key.substr(prev_slash + 1, last_slash - prev_slash - 1));
+        }
+        // Reset per-iteration state by draining the fake through the
+        // adapter directly (keys accumulate otherwise).
+        for (const auto& key : fake_->ObjectKeys())
+        {
+            ASSERT_TRUE(fake_->Delete(key));
+        }
+    }
+    EXPECT_GE(distinct_components.size(), 2u);
+}
+
+/**
+ * @given wrong bytes planted at a CID's derived key directly through
+ *        the fake (the fake stores by key - a mismatched payload at the
+ *        right key simulates remote corruption)
+ * @when the store Gets that CID
+ * @then the failure is Corrupt with BlockSource::Remote and an
+ *        op-context message - never NotFound, never Caller attribution
+ *        (the bytes came from the remote).
+ */
+TEST_F(S3BlockStoreTest, GetWrongBytesAtDerivedKeyIsCorruptRemote)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload = "remote corruption probe payload";
+    const auto cid = MakeCid(payload);
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    // Derive the key in-test exactly as the store does, then plant
+    // mismatched bytes at it through the fake.
+    auto cid_string =
+        libp2p::multi::ContentIdentifierCodec::toString(cid);
+    ASSERT_TRUE(cid_string);
+    const auto digest = cid.content_address.getHash();
+    static const char* kHex = "0123456789abcdef";
+    const std::string fanout{
+        kHex[digest[0] >> 4], kHex[digest[0] & 0x0F]};
+    const std::string key = "v1/blocks/raw/" + fanout + "/"
+        + cid_string.value();
+    const std::string wrong = "NOT the block that hashes to this CID";
+    const std::vector<uint8_t> wrong_bytes(wrong.begin(), wrong.end());
+    auto planted = fake_->Put(key, wrong_bytes);
+    ASSERT_TRUE(planted);
+
+    auto got = store_->Get(cid);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, sgns::blockstore::StatusClass::Corrupt);
+    EXPECT_EQ(got.error().source, sgns::blockstore::BlockSource::Remote);
+    EXPECT_NE(got.error().message.find("Get"),
+              std::string::npos); // op context present
+}
+
+/**
+ * @given Get with verify disabled (ReadOptions::verify == false)
+ * @when wrong bytes sit at the derived key
+ * @then the store returns the planted bytes unrejected - the seam is
+ *        documented honestly; the prohibition against compiling
+ *        verification out is Options.hpp's contract, not this store's.
+ */
+TEST_F(S3BlockStoreTest, GetVerifyDisabledReturnsPlantedBytes)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload = "verify-off probe payload";
+    const auto cid = MakeCid(payload);
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    auto cid_string =
+        libp2p::multi::ContentIdentifierCodec::toString(cid);
+    ASSERT_TRUE(cid_string);
+    const auto digest = cid.content_address.getHash();
+    static const char* kHex = "0123456789abcdef";
+    const std::string fanout{
+        kHex[digest[0] >> 4], kHex[digest[0] & 0x0F]};
+    const std::string key = "v1/blocks/raw/" + fanout + "/"
+        + cid_string.value();
+    const std::string wrong = "unverified bytes pass through";
+    const std::vector<uint8_t> wrong_bytes(wrong.begin(), wrong.end());
+    ASSERT_TRUE(fake_->Put(key, wrong_bytes));
+
+    sgns::blockstore::ReadOptions verify_off;
+    verify_off.verify = false;
+    auto got = store_->Get(cid, verify_off);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got.value().bytes, wrong_bytes);
+}
+
+/**
+ * @given a stored block and a never-put CID
+ * @when GetSize measures both, and Has probes the never-put CID
+ * @then GetSize hit == payload size (HEAD content-length - no bytes
+ *        returned, no verification applies); GetSize miss == NotFound
+ *        FAILURE; Has miss == success false (Head authoritative
+ *        absence).
+ */
+TEST_F(S3BlockStoreTest, GetSizeAndHasHeadMapping)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload = "head mapping probe";
+    const auto cid = MakeCid(payload);
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    auto size = store_->GetSize(cid);
+    ASSERT_TRUE(size);
+    EXPECT_EQ(size.value(),
+              static_cast<uint64_t>(payload.size()));
+
+    const auto missing = MakeCid("head mapping never-put cid");
+    auto size_missing = store_->GetSize(missing);
+    ASSERT_FALSE(size_missing);
+    EXPECT_EQ(size_missing.error().code,
+              sgns::blockstore::StatusClass::NotFound);
+
+    auto has_missing = store_->Has(missing);
+    ASSERT_TRUE(has_missing);
+    EXPECT_FALSE(has_missing.value());
+}
+
+/**
+ * @given SetFault(S3Op::Head, Unavailable) scripted at the fake
+ * @when Has and GetSize run
+ * @then both return TemporarilyUnavailable FAILURES - taxonomy honesty:
+ *        never the value false, never NotFound (an unobtainable answer
+ *        is not an absence).
+ */
+TEST_F(S3BlockStoreTest, HeadFaultIsTemporarilyUnavailableNeverAbsent)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    const auto cid = MakeCid("head fault probe");
+    fake_->SetFault(sgns::blockstore::S3Op::Head,
+                    sgns::blockstore::S3FaultKind::Unavailable);
+
+    auto has = store_->Has(cid);
+    ASSERT_FALSE(has.has_value());
+    EXPECT_EQ(has.error().code,
+              sgns::blockstore::StatusClass::TemporarilyUnavailable);
+
+    auto size = store_->GetSize(cid);
+    ASSERT_FALSE(size.has_value());
+    EXPECT_EQ(size.error().code,
+              sgns::blockstore::StatusClass::TemporarilyUnavailable);
+}
+
+/**
+ * @given Put faults scripted at the fake, then cleared
+ * @when Put runs under each fault, then clean
+ * @then Unauthorized and TemporarilyUnavailable propagate with their
+ *        classes intact, and the clean re-Put succeeds - no sticky
+ *        negative caching at the store layer.
+ */
+TEST_F(S3BlockStoreTest, PutFaultPropagationAndNoStickyFailure)
+{
+    using sgns::blockstore::conformance::MakeCid;
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload = "put fault propagation probe";
+    const auto cid = MakeCid(payload);
+
+    fake_->SetFault(sgns::blockstore::S3Op::Put,
+                    sgns::blockstore::S3FaultKind::Unauthorized);
+    auto unauthorized = store_->Put(cid, SpanOf(payload));
+    ASSERT_FALSE(unauthorized);
+    EXPECT_EQ(unauthorized.error().code,
+              sgns::blockstore::StatusClass::Unauthorized);
+
+    fake_->SetFault(sgns::blockstore::S3Op::Put,
+                    sgns::blockstore::S3FaultKind::Unavailable);
+    auto unavailable = store_->Put(cid, SpanOf(payload));
+    ASSERT_FALSE(unavailable);
+    EXPECT_EQ(unavailable.error().code,
+              sgns::blockstore::StatusClass::TemporarilyUnavailable);
+
+    fake_->ClearFaults();
+    auto clean = store_->Put(cid, SpanOf(payload));
+    ASSERT_TRUE(clean);
+    EXPECT_FALSE(clean.value().alreadyPresent);
+}
+
+/**
+ * @given the store's static capability surface
+ * @when Capabilities() is read
+ * @then maxDurability == ObjectStoreAccepted - the maximum proven
+ *        level; no durable-level claim exists anywhere on the surface
+ *        (a store never reports an achieved level it has not verified).
+ */
+TEST_F(S3BlockStoreTest, CapabilitiesAdvertiseAcceptedMaximum)
+{
+    const auto caps = store_->Capabilities();
+    EXPECT_EQ(caps.maxDurability,
+              sgns::blockstore::DurabilityLevel::ObjectStoreAccepted);
 }
 
 // Phase-1 conformance kit (BACK-02): the full suite against the S3
