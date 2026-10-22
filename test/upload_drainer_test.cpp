@@ -10,14 +10,14 @@
  * triple the Phase-2 journal tests used - GetUploadState +
  * GetPendingUploads + byte identity - but THROUGH the drain.
  *
- * Test-shape note (documented deviation from the plan letter): the
- * fault tables at BOTH layers are op-kind-grained (fake SetFault, local
- * FaultController), so "exactly one of two items fails" inside a
- * SINGLE drain call is not mechanically expressible. Record-and-
- * continue, journal-default-success, and pending-retention are
- * asserted per item on all-failing drains; sibling independence is
- * proven by convergence after partial clears; the mixed-outcome shape
- * is covered by the fresh-store re-drain (alreadyPresent) path.
+ * Test-shape note (Phase 5 update): the earlier documented deviation
+ * is LIFTED - the fake now scripts per-key faults (SetFaultForKey),
+ * so "exactly one item fails inside a SINGLE drain call while its
+ * siblings succeed" is mechanically expressed and proven below
+ * (PartialPutFaultFailsOneKeySiblingsAdvanceAndReDrainRetriesOnlyPending).
+ * The all-failing-drain proofs (record-and-continue,
+ * journal-default-success, pending-retention) and the fresh-store
+ * re-drain (alreadyPresent) convergence twin both stay.
  */
 
 #include <gtest/gtest.h>
@@ -32,6 +32,8 @@
 #include <sgns-blockstore/LocalBlockStore.hpp>
 #include <sgns-blockstore/S3BlockStore.hpp>
 #include <sgns-blockstore/UploadDrainer.hpp>
+
+#include <libp2p/multi/content_identifier_codec.hpp>
 
 // Internal fake - src/ include privilege (test-surface-only).
 #include "InMemoryS3Client.hpp"
@@ -317,4 +319,98 @@ TEST_F(UploadDrainerTest, EmptyPendingDrainReturnsEmptyVector)
     auto drained = DrainPendingUploads(*local_, *remote_);
     ASSERT_TRUE(drained);
     EXPECT_TRUE(drained.value().empty());
+}
+
+/**
+ * @given three pending blocks with the MIDDLE block's remote object key
+ *        scripted for a key-scoped Put fault (the partial-failure
+ *        window: exactly one item fails inside a single drain while
+ *        its siblings succeed - expressible since the Phase-5
+ *        SetFaultForKey seam)
+ * @when the drain runs, then the key fault clears and a re-drain runs
+ * @then the failed item records TemporarilyUnavailable/Remote with its
+ *        journal field at default success (no mark ran) while BOTH
+ *        siblings upload AND advance to UploadedAccepted in the SAME
+ *        drain; exactly the failed CID stays pending; the re-drain
+ *        retries ONLY it (one-item result vector, achieved upload - not
+ *        alreadyPresent) and empties the pending set (D-05(c)/D-06)
+ */
+TEST_F(UploadDrainerTest,
+       PartialPutFaultFailsOneKeySiblingsAdvanceAndReDrainRetriesOnlyPending)
+{
+    const std::string base = "drainer partial-failure payload ";
+    const std::string payload_a = base + "a";
+    const std::string payload_b = base + "b";
+    const std::string payload_c = base + "c";
+    const auto cid_a = MakeCid(payload_a);
+    const auto cid_b = MakeCid(payload_b);
+    const auto cid_c = MakeCid(payload_c);
+    ASSERT_TRUE(local_->Put(cid_a, SpanOf(payload_a)));
+    ASSERT_TRUE(local_->Put(cid_b, SpanOf(payload_b)));
+    ASSERT_TRUE(local_->Put(cid_c, SpanOf(payload_c)));
+
+    // Derive the MIDDLE block's object key exactly as the store does
+    // (the s3_block_store_test derivation).
+    auto cid_string =
+        libp2p::multi::ContentIdentifierCodec::toString(cid_b);
+    ASSERT_TRUE(cid_string);
+    const auto digest = cid_b.content_address.getHash();
+    static const char* kHex = "0123456789abcdef";
+    const std::string fanout{
+        kHex[digest[0] >> 4], kHex[digest[0] & 0x0F]};
+    const std::string middle_key =
+        "v1/blocks/raw/" + fanout + "/" + cid_string.value();
+
+    fake_->SetFaultForKey(middle_key, sgns::blockstore::S3Op::Put,
+                          sgns::blockstore::S3FaultKind::Unavailable);
+    auto drained = DrainPendingUploads(*local_, *remote_);
+    ASSERT_TRUE(drained);
+    ASSERT_EQ(drained.value().size(), 3u); // every seeded CID covered
+
+    for (const auto& item : drained.value())
+    {
+        if (item.cid == cid_b)
+        {
+            ASSERT_FALSE(item.upload);
+            EXPECT_EQ(item.upload.error().code,
+                      StatusClass::TemporarilyUnavailable);
+            EXPECT_EQ(item.upload.error().source,
+                      sgns::blockstore::BlockSource::Remote);
+            ASSERT_TRUE(item.journal); // default success - no mark ran
+        }
+        else
+        {
+            ASSERT_TRUE(item.upload);
+            EXPECT_FALSE(item.upload.value().alreadyPresent);
+            ASSERT_TRUE(item.journal);
+            EXPECT_EQ(local_->GetUploadState(item.cid).value(),
+                      UploadState::UploadedAccepted);
+        }
+    }
+
+    // Exactly the failed CID stays pending.
+    auto pending = local_->GetPendingUploads();
+    ASSERT_TRUE(pending);
+    ASSERT_EQ(pending.value().size(), 1u);
+    EXPECT_EQ(pending.value()[0], cid_b);
+    EXPECT_EQ(local_->GetUploadState(cid_b).value(),
+              UploadState::PendingUpload);
+
+    // D-06 inline recovery in the SAME test: clear the key fault and
+    // re-drain - EXACTLY the still-pending block retries (no sibling
+    // re-put), achieves its first real upload, and the set empties.
+    fake_->SetFaultForKey(middle_key, sgns::blockstore::S3Op::Put,
+                          sgns::blockstore::S3FaultKind::None);
+    auto re_drained = DrainPendingUploads(*local_, *remote_);
+    ASSERT_TRUE(re_drained);
+    ASSERT_EQ(re_drained.value().size(), 1u);
+    EXPECT_EQ(re_drained.value()[0].cid, cid_b);
+    ASSERT_TRUE(re_drained.value()[0].upload);
+    EXPECT_FALSE(re_drained.value()[0].upload.value().alreadyPresent);
+    ASSERT_TRUE(re_drained.value()[0].journal);
+    EXPECT_EQ(local_->GetUploadState(cid_b).value(),
+              UploadState::UploadedAccepted);
+    auto pending_after = local_->GetPendingUploads();
+    ASSERT_TRUE(pending_after);
+    EXPECT_TRUE(pending_after.value().empty());
 }
