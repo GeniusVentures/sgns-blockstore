@@ -340,6 +340,63 @@ namespace sgns::blockstore::conformance
                   sgns::blockstore::StatusClass::Unauthorized);            \
         fc->SetFault(sgns::blockstore::FaultKind::None);                   \
         ASSERT_TRUE(store_->Get(cid_a_)); /* non-sticky */                 \
+    }                                                                      \
+    /* Backend-generic metadata-path fault honesty (Phase 5, D-07):       \
+     * an induced backend failure on Has/GetSize must surface the         \
+     * taxonomy class - never a bare false, never NotFound (the           \
+     * CRDT-corruption trap) - and recover inline (D-06).                 \
+     */                                                                    \
+    TEST_F(SuiteName, FaultOnHasSurfacesTemporarilyUnavailableNeverFalseAndRecoversInline) \
+    {                                                                                      \
+        using sgns::blockstore::conformance::SpanOf;                                       \
+        ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));                              \
+        auto fc =                                                                           \
+            std::dynamic_pointer_cast<sgns::blockstore::FaultController>(                  \
+                store_);                                                                    \
+        if (!fc)                                                                            \
+        {                                                                                   \
+            GTEST_SKIP() << "[fault-conformance] backend does not implement "              \
+                            "FaultController";                                              \
+        }                                                                                   \
+        fc->SetFault(sgns::blockstore::FaultKind::Unavailable);                             \
+        auto has = store_->Has(cid_a_);                                                     \
+        /* A backend failure must NEVER surface as bare false (success) -   */             \
+        /* it is a failure carrying the taxonomy class.                      */            \
+        ASSERT_FALSE(has.has_value());                                                      \
+        EXPECT_EQ(has.error().code,                                                         \
+                  sgns::blockstore::StatusClass::TemporarilyUnavailable);                  \
+        fc->SetFault(sgns::blockstore::FaultKind::None);                                    \
+        /* D-06 inline recovery: cleared fault -> Has true in the SAME test. */            \
+        auto recovered = store_->Has(cid_a_);                                              \
+        ASSERT_TRUE(recovered);                                                             \
+        EXPECT_TRUE(recovered.value());                                                    \
+    }                                                                                       \
+    TEST_F(SuiteName, FaultOnGetSizeSurfacesTaxonomyNeverNotFoundAndRecoversInline)        \
+    {                                                                                       \
+        using sgns::blockstore::conformance::SpanOf;                                        \
+        ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));                               \
+        auto fc =                                                                            \
+            std::dynamic_pointer_cast<sgns::blockstore::FaultController>(                   \
+                store_);                                                                     \
+        if (!fc)                                                                            \
+        {                                                                                   \
+            GTEST_SKIP() << "[fault-conformance] backend does not implement "               \
+                            "FaultController";                                              \
+        }                                                                                   \
+        fc->SetFault(sgns::blockstore::FaultKind::Unavailable);                             \
+        auto size = store_->GetSize(cid_a_);                                                \
+        ASSERT_FALSE(size.has_value());                                                     \
+        EXPECT_EQ(size.error().code,                                                        \
+                  sgns::blockstore::StatusClass::TemporarilyUnavailable);                   \
+        /* Never NotFound: a metadata failure misread as authoritative      */              \
+        /* absence is the CRDT-corruption trap.                             */               \
+        EXPECT_NE(size.error().code,                                                        \
+                  sgns::blockstore::StatusClass::NotFound);                                 \
+        fc->SetFault(sgns::blockstore::FaultKind::None);                                    \
+        /* D-06 inline recovery: cleared fault -> the stored size inline.   */              \
+        auto recovered = store_->GetSize(cid_a_);                                           \
+        ASSERT_TRUE(recovered);                                                             \
+        EXPECT_EQ(recovered.value(), payload_a_.size());                                    \
     }
 
 #endif  // SGNS_BLOCKSTORE_CONFORMANCETESTS_HPP

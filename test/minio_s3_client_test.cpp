@@ -123,6 +123,43 @@ namespace
                "\r\n";
     }
 
+    /// @brief Any bare status line with an empty body (5xx breadth).
+    std::string BareStatus(const std::string& status_line)
+    {
+        return "HTTP/1.1 " + status_line + "\r\n"
+               "Content-Length: 0\r\n"
+               "Connection: close\r\n"
+               "\r\n";
+    }
+
+    /// @brief A valid 200 object response carrying the known payload
+    ///        (the D-06 inline-recovery tail's good fetch).
+    std::string GoodObject200()
+    {
+        return "HTTP/1.1 200 OK\r\n"
+               "ETag: \"recovered\"\r\n"
+               "Content-Length: " + std::to_string(kPayload.size()) + "\r\n"
+               "Connection: close\r\n"
+               "\r\n" + kPayload;
+    }
+
+    /// @brief A 412 whose body is unparseable binary noise (the third
+    ///        observed wire shape - mapper classification must still be
+    ///        alreadyPresent, never a failure).
+    std::string BinaryBody412()
+    {
+        const std::string noise = [] {
+            const unsigned char raw[] = {0x01, 0xfd, 0xfe, 0xc3, 0x7f, 0x80};
+            return std::string(reinterpret_cast<const char*>(raw),
+                               sizeof(raw)) + "precondition-noise";
+        }();
+        return "HTTP/1.1 412 Precondition Failed\r\n"
+               "Content-Type: application/octet-stream\r\n"
+               "Content-Length: " + std::to_string(noise.size()) + "\r\n"
+               "Connection: close\r\n"
+               "\r\n" + noise;
+    }
+
     /**
      * @given a client pointed at a port where a stub listened but no
      *        longer does (connection refused)
@@ -144,6 +181,16 @@ namespace
         EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
         EXPECT_NE(got.error().code, StatusClass::NotFound);
         EXPECT_EQ(got.error().source, BlockSource::Remote);
+
+        // D-06 inline recovery: the transport itself recovers - restart
+        // the stub (fresh ephemeral port) and a new client fetches good
+        // bytes in the SAME test.
+        ASSERT_TRUE(probe.Start());
+        probe.EnqueueResponse(GoodObject200());
+        auto revived = MakeClient(probe.Port());
+        auto recovered = revived->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
     }
 
     /**
@@ -164,6 +211,87 @@ namespace
         EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
         EXPECT_NE(got.error().code, StatusClass::NotFound);
         EXPECT_EQ(got.error().source, BlockSource::Remote);
+
+        // D-06 inline recovery: cleared stub -> good fetch, same client.
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
+    }
+
+    /**
+     * @given the stub scripted with a bare 502 Bad Gateway
+     * @when Get runs
+     * @then the error slot is TemporarilyUnavailable, never NotFound,
+     *        and the cleared-stub good fetch succeeds in the same test
+     */
+    TEST(MinioS3ClientMatrixTest, Http502IsTemporarilyUnavailable)
+    {
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(BareStatus("502 Bad Gateway"));
+
+        auto client = MakeClient(stub.Port());
+        auto got = client->Get("matrix-object");
+        ASSERT_FALSE(got);
+        EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+        EXPECT_NE(got.error().code, StatusClass::NotFound);
+        EXPECT_EQ(got.error().source, BlockSource::Remote);
+
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
+    }
+
+    /**
+     * @given the stub scripted with a bare 503 Service Unavailable
+     * @when Get runs
+     * @then the error slot is TemporarilyUnavailable, never NotFound,
+     *        and the cleared-stub good fetch succeeds in the same test
+     */
+    TEST(MinioS3ClientMatrixTest, Http503IsTemporarilyUnavailable)
+    {
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(BareStatus("503 Service Unavailable"));
+
+        auto client = MakeClient(stub.Port());
+        auto got = client->Get("matrix-object");
+        ASSERT_FALSE(got);
+        EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+        EXPECT_NE(got.error().code, StatusClass::NotFound);
+        EXPECT_EQ(got.error().source, BlockSource::Remote);
+
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
+    }
+
+    /**
+     * @given the stub scripted with a bare 504 Gateway Timeout
+     * @when Get runs
+     * @then the error slot is TemporarilyUnavailable, never NotFound,
+     *        and the cleared-stub good fetch succeeds in the same test
+     */
+    TEST(MinioS3ClientMatrixTest, Http504IsTemporarilyUnavailable)
+    {
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(BareStatus("504 Gateway Timeout"));
+
+        auto client = MakeClient(stub.Port());
+        auto got = client->Get("matrix-object");
+        ASSERT_FALSE(got);
+        EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+        EXPECT_NE(got.error().code, StatusClass::NotFound);
+        EXPECT_EQ(got.error().source, BlockSource::Remote);
+
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
     }
 
     /**
@@ -190,6 +318,73 @@ namespace
         ASSERT_FALSE(got);
         EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
         EXPECT_NE(got.error().code, StatusClass::NotFound);
+
+        // D-06 inline recovery: cleared stub -> good fetch, same client.
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
+    }
+
+    /**
+     * @given the stub declaring N body bytes but delivering exactly ONE
+     *        before closing (a different cut point than the zero-byte
+     *        truncation above)
+     * @when Get runs
+     * @then the error slot is TemporarilyUnavailable (mid-body framing
+     *        break - the D-08 transport half), never NotFound, and the
+     *        cleared-stub good fetch succeeds in the same test
+     */
+    TEST(MinioS3ClientMatrixTest,
+         TruncatedBodyAfterFirstByteIsTemporarilyUnavailable)
+    {
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(
+            "HTTP/1.1 200 OK\r\n"
+            "ETag: \"cut-after-first-byte\"\r\n"
+            "Content-Length: 1024\r\n"
+            "Connection: close\r\n"
+            "\r\n" + kPayload.substr(0, 1));
+
+        auto client = MakeClient(stub.Port());
+        auto got = client->Get("matrix-object");
+        ASSERT_FALSE(got);
+        EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+        EXPECT_NE(got.error().code, StatusClass::NotFound);
+
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
+    }
+
+    /**
+     * @given the stub closing the connection MID-header-block (no blank
+     *        line, no header completion, no body)
+     * @when Get runs
+     * @then the error slot is TemporarilyUnavailable, never NotFound,
+     *        and the cleared-stub good fetch succeeds in the same test
+     */
+    TEST(MinioS3ClientMatrixTest,
+         TruncatedHeadersIsTemporarilyUnavailable)
+    {
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(
+            "HTTP/1.1 200 OK\r\n"
+            "ETag: \"trunc");
+
+        auto client = MakeClient(stub.Port());
+        auto got = client->Get("matrix-object");
+        ASSERT_FALSE(got);
+        EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+        EXPECT_NE(got.error().code, StatusClass::NotFound);
+
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
     }
 
     /**
@@ -208,6 +403,43 @@ namespace
         ASSERT_FALSE(got);
         EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
         EXPECT_NE(got.error().code, StatusClass::NotFound);
+
+        // D-06 inline recovery: cleared stub -> good fetch, same client.
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
+    }
+
+    /**
+     * @given the stub sending BINARY noise bytes (a garbage shape
+     *        distinct from the non-HTTP text form above)
+     * @when Get runs
+     * @then the error slot is TemporarilyUnavailable, never NotFound,
+     *        and the cleared-stub good fetch succeeds in the same test
+     */
+    TEST(MinioS3ClientMatrixTest,
+         GarbageBinaryNoiseIsTemporarilyUnavailable)
+    {
+        const std::string noise = [] {
+            const unsigned char raw[] = {0x01, 0xfd, 0xfe, 0xc3, 0x7f, 0x80};
+            return std::string(reinterpret_cast<const char*>(raw),
+                               sizeof(raw)) + "~binary~noise~";
+        }();
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(noise);
+
+        auto client = MakeClient(stub.Port());
+        auto got = client->Get("matrix-object");
+        ASSERT_FALSE(got);
+        EXPECT_EQ(got.error().code, StatusClass::TemporarilyUnavailable);
+        EXPECT_NE(got.error().code, StatusClass::NotFound);
+
+        stub.EnqueueResponse(GoodObject200());
+        auto recovered = client->Get("matrix-object");
+        ASSERT_TRUE(recovered);
+        EXPECT_EQ(recovered.value().bytes, BytesOf(kPayload));
     }
 
     /**
@@ -249,6 +481,30 @@ namespace
         auto put = client->Put("matrix-object", BytesOf(kPayload),
                                PutObjectOptions{/*createOnly=*/true});
         ASSERT_TRUE(put) << "empty-body 412 must map to the success slot";
+        EXPECT_TRUE(put.value().achieved);
+        EXPECT_TRUE(put.value().alreadyPresent);
+    }
+
+    /**
+     * @given the stub serving a 412 whose body is unparseable binary
+     *        noise (the THIRD observed wire shape - alongside the XML
+     *        and empty-body forms above)
+     * @when a createOnly Put runs
+     * @then the result is STILL the success slot with alreadyPresent=
+     *        true - whichever of the mapper's three 412 message shapes
+     *        minio-cpp emits, the semantic is alreadyPresent (the trio
+     *        must not regress)
+     */
+    TEST(MinioS3ClientMatrixTest, PreconditionBinaryBodyMapsToAlreadyPresent)
+    {
+        LoopbackHttpStub stub;
+        ASSERT_TRUE(stub.Start());
+        stub.EnqueueResponse(BinaryBody412());
+
+        auto client = MakeClient(stub.Port());
+        auto put = client->Put("matrix-object", BytesOf(kPayload),
+                               PutObjectOptions{/*createOnly=*/true});
+        ASSERT_TRUE(put) << "binary-body 412 must map to the success slot";
         EXPECT_TRUE(put.value().achieved);
         EXPECT_TRUE(put.value().alreadyPresent);
     }
