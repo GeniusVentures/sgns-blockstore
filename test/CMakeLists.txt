@@ -119,5 +119,23 @@ if(WIN32)
     target_link_libraries(minio_s3_client_test ws2_32)
 endif()
 
+# S3D-TIER dev-gated live spike (Phase 4, 04-02, D-05/D-06): connects
+# to a dev-managed s3d v0.2.1 endpoint ONLY - never spawns or manages
+# the server (D-08), never a CMake gate: with the SGNS_BLOCKSTORE_TEST_S3D_*
+# env vars unset both cases loud-skip [SGNS_BLOCKSTORE][S3D-TIER]
+# (runtime skip, TEST-01). Links the SDK for the raw wire-path probe.
+addtest(s3d_spike_test s3d_spike_test.cpp)
+target_include_directories(s3d_spike_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(s3d_spike_test
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+    OpenSSL::Crypto
+    OpenSSL::SSL
+)
+if(WIN32)
+    target_link_libraries(s3d_spike_test ws2_32)
+endif()
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
