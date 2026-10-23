@@ -98,6 +98,67 @@ TEST_F(S3BlockStoreTest, KeyLayoutKnownVectorHelloWorld)
 }
 
 /**
+ * @given the pinned CRDT-shape block {} (RFC 8949 a0) with its real
+ *        blake2b-256 CID (cross-check-log vector, D-02)
+ * @when it is Put through S3BlockStore over the fake
+ * @then exactly one object exists and its key is
+ *        v1/blocks/dag-cbor/d3/<pinned CID string> - the DAG_CBOR token
+ *        lands in the layout, and the pinned CID string doubles as the
+ *        DAG_CBOR toString proof (a codec that could not render would
+ *        fail DeriveKey loudly - RESEARCH landmine 3)
+ */
+TEST_F(S3BlockStoreTest, DagCborKeyLayoutKnownVector)
+{
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload("\xa0", 1);
+    const auto cid = sgns::blockstore::CidOf(
+        SpanOf(payload),
+        libp2p::multi::MulticodecType::Code::DAG_CBOR,
+        libp2p::multi::HashType::blake2b_256).value();
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    const auto keys = fake_->ObjectKeys();
+    ASSERT_EQ(keys.size(), 1u);
+
+    // Fan-out byte = first blake2b digest byte (0xd3 for the a0 vector:
+    // the cross-check digest d36a2619...). Full key pinned to the
+    // cross-check-log CID literal (D-02).
+    EXPECT_EQ(keys[0],
+              "v1/blocks/dag-cbor/d3/"
+              "bafy2bzacedjwujqzuzzesrqe4en3ir6lz5jdd2psxis4efuro7w4sqn5kcwwy");
+}
+
+/**
+ * @given a stored pinned blake2b block whose FETCHED bytes the fake
+ *        flips (SetFlipBytesForKey)
+ * @when Get runs with verification
+ * @then Corrupt attributed to Remote - the verify-on-get site branches
+ *        on the CID's own blake2b-256 multihash (SC2), and clearing the
+ *        flip is non-sticky
+ */
+TEST_F(S3BlockStoreTest, Blake2bGetCorruptedFetchIsCorruptWithRemoteSource)
+{
+    using sgns::blockstore::conformance::SpanOf;
+    const std::string payload("\xa0", 1);
+    const auto cid = sgns::blockstore::CidOf(
+        SpanOf(payload),
+        libp2p::multi::MulticodecType::Code::DAG_CBOR,
+        libp2p::multi::HashType::blake2b_256).value();
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+
+    const std::string key =
+        "v1/blocks/dag-cbor/d3/"
+        "bafy2bzacedjwujqzuzzesrqe4en3ir6lz5jdd2psxis4efuro7w4sqn5kcwwy";
+    fake_->SetFlipBytesForKey(key, true);
+    auto got = store_->Get(cid);
+    ASSERT_FALSE(got);
+    EXPECT_EQ(got.error().code, sgns::blockstore::StatusClass::Corrupt);
+    EXPECT_EQ(got.error().source, sgns::blockstore::BlockSource::Remote);
+    fake_->SetFlipBytesForKey(key, false);
+    ASSERT_TRUE(store_->Get(cid));
+}
+
+/**
  * @given a stored block
  * @when the identical CID/bytes pair is Put again
  * @then the SUCCESS slot reports alreadyPresent=true at the

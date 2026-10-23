@@ -61,8 +61,9 @@ namespace
 
     Cid Blake2bCid()
     {
-        // 32 arbitrary bytes as a blake2b-256 digest - the CRDT CBOR
-        // boundary shape that v1 must reject at API entry (D-08).
+        // 32 arbitrary bytes as a blake2b-256 digest - a no-payload gate
+        // probe after the Phase-6 widening (the pair is accepted; a fake
+        // digest can never round-trip, so real vectors use CidOf below).
         static const uint8_t digest[32] = {
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
@@ -72,6 +73,26 @@ namespace
         return Cid(Cid::Version::V1, MulticodecType::Code::RAW,
                    Multihash::create(HashType::blake2b_256,
                                      gsl::span<const uint8_t>(digest, 32))
+                       .value());
+    }
+
+    Cid Sha512Cid()
+    {
+        // 64 arbitrary bytes as a sha-512 digest - the out-of-set
+        // rejection exemplar after the Phase-6 widening (D-01/D-03).
+        static const uint8_t digest[64] = {
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+            0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+            0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+        };
+        return Cid(Cid::Version::V1, MulticodecType::Code::RAW,
+                   Multihash::create(HashType::sha512,
+                                     gsl::span<const uint8_t>(digest, 64))
                        .value());
     }
 
@@ -487,10 +508,21 @@ TEST_F(LocalBlockStoreTest, RePutDoesNotRegressJournalState)
 TEST_F(LocalBlockStoreTest, TransitionsRespectEntryGates)
 {
     ASSERT_NE(store_, nullptr);
-    EXPECT_THROW((void)store_->MarkUploadedDurable(Blake2bCid()),
+    // Phase-6 widening: journal tooling rides the widened store gate -
+    // the out-of-set exemplar (sha-512) still throws, while blake2b-256
+    // (the CRDT shape) is accepted end-to-end (D-01).
+    EXPECT_THROW((void)store_->MarkUploadedDurable(Sha512Cid()),
                  std::invalid_argument);
-    EXPECT_THROW((void)store_->GetUploadState(Blake2bCid()),
+    EXPECT_THROW((void)store_->GetUploadState(Sha512Cid()),
                  std::invalid_argument);
+    const std::string cbor_payload("\xa0", 1);
+    const Cid blake2b_cid =
+        CidOf(SpanOf(cbor_payload), MulticodecType::Code::DAG_CBOR,
+              HashType::blake2b_256).value();
+    ASSERT_TRUE(store_->Put(blake2b_cid, SpanOf(cbor_payload)));
+    ASSERT_TRUE(store_->MarkUploadedDurable(blake2b_cid));
+    auto upload_state = store_->GetUploadState(blake2b_cid);
+    ASSERT_TRUE(upload_state);
 
     ASSERT_TRUE(store_->Put(cid_a_, SpanOf(payload_a_)));
     store_->SetFault(FaultKind::Unavailable);

@@ -32,6 +32,7 @@
 #include <sgns-blockstore/FaultController.hpp>
 #include <sgns-blockstore/Options.hpp>
 
+#include <libp2p/multi/content_identifier_codec.hpp>
 #include <libp2p/multi/multihash.hpp>
 
 namespace sgns::blockstore::conformance
@@ -51,7 +52,12 @@ namespace sgns::blockstore::conformance
 
     inline Cid MakeBlake2bCid()
     {
-        // The CRDT CBOR boundary shape that must throw at API entry (D-08).
+        // Phase-6 (D-01): blake2b-256 is no longer a rejection probe - the
+        // pair {sha-256, blake2b-256} is accepted. This fake-digest CID is
+        // valid only as a no-payload gate probe (Has/GetSize accept it; a
+        // Put with any bytes fails Corrupt because the fake digest can
+        // never match); real roundtrip coverage uses the pinned
+        // real-digest vectors (MakeDagCborBlake2bCid) below.
         static const uint8_t digest[32] = {
             0xb1, 0xb2, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
@@ -63,6 +69,51 @@ namespace sgns::blockstore::conformance
                        libp2p::multi::HashType::blake2b_256,
                        gsl::span<const uint8_t>(digest, 32))
                        .value());
+    }
+
+    inline Cid MakeSha512Cid()
+    {
+        // The rejection exemplar after the Phase-6 widening (D-03): a
+        // 64-byte fake sha-512 digest fits Multihash::kMaxHashLength
+        // (127), so the multihash constructor succeeds and the ENTRY GATE
+        // is provably what throws - the programmer-error shape.
+        static const uint8_t digest[64] = {
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
+            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+            0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+            0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
+        };
+        return Cid(Cid::Version::V1, libp2p::multi::MulticodecType::Code::RAW,
+                   libp2p::multi::Multihash::create(
+                       libp2p::multi::HashType::sha512,
+                       gsl::span<const uint8_t>(digest, 64))
+                       .value());
+    }
+
+    inline std::vector<uint8_t> HexBytes(const char* hex)
+    {
+        std::vector<uint8_t> out;
+        for (const char* p = hex; p[0] != '\0' && p[1] != '\0'; p += 2)
+        {
+            out.push_back(static_cast<uint8_t>(
+                std::stoi(std::string(p, 2), nullptr, 16)));
+        }
+        return out;
+    }
+
+    inline Cid MakeDagCborBlake2bCid(gsl::span<const uint8_t> bytes)
+    {
+        // Real-digest CRDT shape: the 3-arg CidOf composing
+        // CIDv1/DAG_CBOR/blake2b-256 exactly as sgns::common::getCidOf
+        // does (Phase-6 widening, D-04; cross-check evidence at
+        // docs/evidence/blake2b-crosscheck/getcidof-crosscheck.log).
+        return CidOf(bytes, libp2p::multi::MulticodecType::Code::DAG_CBOR,
+                     libp2p::multi::HashType::blake2b_256)
+            .value();
     }
 }
 
@@ -192,18 +243,23 @@ namespace sgns::blockstore::conformance
         EXPECT_EQ(res.error().code, sgns::blockstore::StatusClass::Corrupt);   \
         EXPECT_EQ(res.error().source, sgns::blockstore::BlockSource::Caller);  \
     }                                                                          \
-    TEST_F(SuiteName, PutNonSha256HashThrowsInvalidArgument)                   \
+    /* @given a sha-512 CID (the out-of-set rejection exemplar after   \
+     * the Phase-6 widening, D-03)                                     \
+     * @when Put or Get is called with it                              \
+     * @then std::invalid_argument at API entry                        \
+     */                                                                    \
+    TEST_F(SuiteName, PutRejectedHashThrowsInvalidArgument)                   \
     {                                                                          \
         using sgns::blockstore::conformance::SpanOf;                           \
         EXPECT_THROW(                                                          \
-            (void)store_->Put(sgns::blockstore::conformance::MakeBlake2bCid(), \
+            (void)store_->Put(sgns::blockstore::conformance::MakeSha512Cid(),  \
                               SpanOf(payload_a_)),                             \
             std::invalid_argument);                                            \
     }                                                                          \
-    TEST_F(SuiteName, GetNonSha256HashThrowsInvalidArgument)                   \
+    TEST_F(SuiteName, GetRejectedHashThrowsInvalidArgument)                   \
     {                                                                          \
         EXPECT_THROW(                                                          \
-            (void)store_->Get(sgns::blockstore::conformance::MakeBlake2bCid()),\
+            (void)store_->Get(sgns::blockstore::conformance::MakeSha512Cid()), \
             std::invalid_argument);                                            \
     }                                                                          \
     /* @given [good, mismatched, good] @when PutMany runs                      \
@@ -231,21 +287,168 @@ namespace sgns::blockstore::conformance
         EXPECT_TRUE(store_->Get(cid_a_));                                      \
         EXPECT_TRUE(store_->Get(cid_b_));                                      \
     }                                                                          \
-    /* @given a batch containing a blake2b CID @when PutMany runs              \
-     * @then std::invalid_argument BEFORE any write; valid entries absent      \
-     */                                                                        \
-    TEST_F(SuiteName, PutManyInvalidHashTypeThrowsBeforeAnyWrite)              \
+    /* @given a batch containing a sha-512 CID (out-of-set, D-03)       \
+     * @when PutMany runs                                                \
+     * @then std::invalid_argument BEFORE any write; valid entries       \
+     * absent (nothing written)                                          \
+     */                                                                    \
+    TEST_F(SuiteName, PutManyRejectedHashThrowsBeforeAnyWrite)               \
     {                                                                          \
         using sgns::blockstore::conformance::SpanOf;                           \
         const sgns::blockstore::BlockInput batch[] = {                         \
             {cid_a_, SpanOf(payload_a_)},                                      \
-            {sgns::blockstore::conformance::MakeBlake2bCid(),                  \
+            {sgns::blockstore::conformance::MakeSha512Cid(),                   \
              SpanOf(payload_b_)},                                              \
         };                                                                     \
         EXPECT_THROW((void)store_->PutMany(batch), std::invalid_argument);     \
         auto has_valid = store_->Has(cid_a_);                                  \
         ASSERT_TRUE(has_valid);                                                \
         EXPECT_FALSE(has_valid.value());                                       \
+    }                                                                          \
+    /* @given the three pinned RFC 8949 CBOR payloads with real             \
+     * blake2b-256 digests (pinned from the committed cross-check log      \
+     * docs/evidence/blake2b-crosscheck/getcidof-crosscheck.log, D-02      \
+     * two-source discipline: Python hashlib vs the vendored C through    \
+     * the real producer getCidOf - never pinned from memory)               \
+     * @when each is Put then Get/Has/GetSize run                           \
+     * @then byte-identical round trip, Has true, exact size, and the      \
+     * CID string equals the pinned literal - on EVERY backend (SC1)     \
+     */                                                                    \
+    TEST_F(SuiteName, Blake2bDagCborPinnedVectorsRoundTrip)                  \
+    {                                                                          \
+        const char* payload_hex[3] = {                                         \
+            "a0",                                                             \
+            "a1636b657901",                                                   \
+            "a16568656c6c6f65776f726c64",                                    \
+        };                                                                     \
+        const char* pinned_cids[3] = {                                         \
+            "bafy2bzacedjwujqzuzzesrqe4en3ir6lz5jdd2psxis4efuro7w4sqn5kcwwy",  \
+            "bafy2bzacebonb5hj5tjvn2ir7scwauk7tj3vi664w55y43dapas3czsaumsdq",  \
+            "bafy2bzacedtxqx7k666ugf5mmagr2fxmbpfncbcji5jfg5uduausgb62y3av4",  \
+        };                                                                     \
+        for (size_t i = 0; i < 3; ++i)                                         \
+        {                                                                      \
+            const auto payload_bytes =                                         \
+                sgns::blockstore::conformance::HexBytes(payload_hex[i]);       \
+            const auto cid =                                                   \
+                sgns::blockstore::conformance::MakeDagCborBlake2bCid(          \
+                    gsl::span<const uint8_t>(payload_bytes.data(),             \
+                                           payload_bytes.size()));             \
+            ASSERT_TRUE(store_->Put(                                          \
+                cid, gsl::span<const uint8_t>(payload_bytes.data(),            \
+                                             payload_bytes.size())));           \
+            auto got = store_->Get(cid);                                       \
+            ASSERT_TRUE(got);                                                  \
+            EXPECT_EQ(got.value().bytes, payload_bytes);                       \
+            auto has = store_->Has(cid);                                       \
+            ASSERT_TRUE(has);                                                  \
+            EXPECT_TRUE(has.value());                                          \
+            auto size = store_->GetSize(cid);                                  \
+            ASSERT_TRUE(size);                                                 \
+            EXPECT_EQ(size.value(),                                            \
+                      static_cast<uint64_t>(payload_bytes.size()));            \
+            auto cid_string =                                                  \
+                libp2p::multi::ContentIdentifierCodec::toString(cid);          \
+            ASSERT_TRUE(cid_string);                                           \
+            EXPECT_EQ(cid_string.value(), pinned_cids[i]);                     \
+        }                                                                      \
+    }                                                                          \
+    /* @given a real-digest blake2b/DAG_CBOR CID and its payload with one   \
+     * flipped byte                                                          \
+     * @when Put runs                                                        \
+     * @then Corrupt with source == Caller (SC2: the verify site branches  \
+     * on the CID's own multihash, so the mismatch is detected under       \
+     * blake2b-256 too)                                                      \
+     */                                                                    \
+    TEST_F(SuiteName, Blake2bPutMismatchedBytesIsCorruptWithCallerSource)   \
+    {                                                                          \
+        const auto payload_bytes =                                             \
+            sgns::blockstore::conformance::HexBytes("a0");                    \
+        const auto cid =                                                       \
+            sgns::blockstore::conformance::MakeDagCborBlake2bCid(              \
+                gsl::span<const uint8_t>(payload_bytes.data(),                 \
+                                       payload_bytes.size()));                 \
+        auto corrupted = payload_bytes;                                        \
+        corrupted[0] = static_cast<uint8_t>(~corrupted[0]);                    \
+        auto res = store_->Put(                                               \
+            cid, gsl::span<const uint8_t>(corrupted.data(),                    \
+                                         corrupted.size()));                   \
+        ASSERT_FALSE(res);                                                     \
+        EXPECT_EQ(res.error().code, sgns::blockstore::StatusClass::Corrupt);   \
+        EXPECT_EQ(res.error().source,                                         \
+                  sgns::blockstore::BlockSource::Caller);                      \
+    }                                                                          \
+    /* @given a stored pinned blake2b block and the CorruptData fault       \
+     * @when Get runs with verification (mirror of the kit's stored-bytes   \
+     * corruption shape, on a blake2b CID)                                   \
+     * @then Corrupt attributed to the backend (never Caller/Unknown) and   \
+     * non-sticky after the fault clears (SC2 attribution; the per-backend  \
+     * source is Memory/Local for the seam'd backends; the S3 Remote        \
+     * variant is pinned in s3_block_store_test)                            \
+     */                                                                    \
+    TEST_F(SuiteName, Blake2bFaultCorruptDataGetVerifyRejectedCorrupt)      \
+    {                                                                          \
+        const auto payload_bytes =                                             \
+            sgns::blockstore::conformance::HexBytes("a0");                    \
+        const auto cid =                                                       \
+            sgns::blockstore::conformance::MakeDagCborBlake2bCid(              \
+                gsl::span<const uint8_t>(payload_bytes.data(),                 \
+                                       payload_bytes.size()));                 \
+        ASSERT_TRUE(store_->Put(                                              \
+            cid, gsl::span<const uint8_t>(payload_bytes.data(),                \
+                                         payload_bytes.size())));               \
+        auto fc = std::dynamic_pointer_cast<sgns::blockstore::FaultController>(store_); \
+        if (!fc)                                                               \
+        {                                                                      \
+            GTEST_SKIP() << "[fault-conformance] backend does not implement " \
+                            "FaultController";                                \
+        }                                                                      \
+        fc->SetFault(sgns::blockstore::FaultKind::CorruptData);                \
+        auto got = store_->Get(cid);                                           \
+        ASSERT_FALSE(got);                                                     \
+        EXPECT_EQ(got.error().code, sgns::blockstore::StatusClass::Corrupt);   \
+        EXPECT_NE(got.error().source, sgns::blockstore::BlockSource::Caller);  \
+        EXPECT_NE(got.error().source, sgns::blockstore::BlockSource::Unknown); \
+        fc->SetFault(sgns::blockstore::FaultKind::None);                        \
+        ASSERT_TRUE(store_->Get(cid));                                         \
+    }                                                                          \
+    /* @given a mixed sha-256 + blake2b batch, then a batch containing a    \
+     * sha-512 CID                                                            \
+     * @when PutMany runs                                                     \
+     * @then the mixed batch stores completely (D-01); the sha-512 batch    \
+     * throws std::invalid_argument BEFORE any write (D-03)                 \
+     */                                                                    \
+    TEST_F(SuiteName,                                                        \
+           PutManyMixedSha256AndBlake2bAcceptedAndSha512ThrowsBeforeAnyWrite)\
+    {                                                                          \
+        using sgns::blockstore::conformance::SpanOf;                           \
+        const auto cb_bytes =                                                  \
+            sgns::blockstore::conformance::HexBytes("a0");                    \
+        const auto cb_cid =                                                    \
+            sgns::blockstore::conformance::MakeDagCborBlake2bCid(              \
+                gsl::span<const uint8_t>(cb_bytes.data(), cb_bytes.size()));   \
+        const sgns::blockstore::BlockInput mixed[] = {                         \
+            {cid_a_, SpanOf(payload_a_)},                                      \
+            {cb_cid, gsl::span<const uint8_t>(cb_bytes.data(),                 \
+                                            cb_bytes.size())},                 \
+        };                                                                     \
+        auto mixed_res = store_->PutMany(mixed);                               \
+        ASSERT_TRUE(mixed_res);                                                \
+        ASSERT_EQ(mixed_res.value().size(), 2u);                               \
+        EXPECT_TRUE(mixed_res.value()[0]);                                     \
+        EXPECT_TRUE(mixed_res.value()[1]);                                     \
+        EXPECT_TRUE(store_->Get(cid_a_));                                      \
+        EXPECT_TRUE(store_->Get(cb_cid));                                      \
+        const sgns::blockstore::BlockInput rejected[] = {                      \
+            {cid_b_, SpanOf(payload_b_)},                                      \
+            {sgns::blockstore::conformance::MakeSha512Cid(),                   \
+             SpanOf(payload_a_)},                                              \
+        };                                                                     \
+        EXPECT_THROW((void)store_->PutMany(rejected),                          \
+                     std::invalid_argument);                                   \
+        auto has_b = store_->Has(cid_b_);                                      \
+        ASSERT_TRUE(has_b);                                                    \
+        EXPECT_FALSE(has_b.value());                                          \
     }                                                                          \
     /* Fault-seam cases (D-10): probed via dynamic_pointer_cast; backends      \
      * without the seam get loud labelled skips naming [fault-conformance].    \

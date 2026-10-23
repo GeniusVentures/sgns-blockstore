@@ -20,19 +20,22 @@ namespace sgns::blockstore
     namespace
     {
         /**
-         * @brief The single shared entry gate (D-08 precedent): rejects
-         *        non-sha256 multihash CIDs as programmer error BEFORE
-         *        any adapter call or key derivation.
+         * @brief The single shared entry gate (D-01): rejects every
+         *        multihash type outside {sha-256, blake2b-256} as
+         *        programmer error BEFORE any adapter call or key
+         *        derivation.
          */
         void ValidateCidHash(const Cid& cid)
         {
-            if (cid.content_address.getType()
-                != libp2p::multi::HashType::sha256)
+            const auto type = cid.content_address.getType();
+            if (type != libp2p::multi::HashType::sha256
+                && type != libp2p::multi::HashType::blake2b_256)
             {
                 throw std::invalid_argument(
-                    "sgns::blockstore: CID multihash type is not sha-256 - "
-                    "v1 accepts sha-256 CIDs only (D-08; blake2b CRDT CIDs "
-                    "are a documented v1 non-goal)");
+                    "sgns::blockstore: CID multihash type is not sha-256 "
+                    "or blake2b-256 - accepted hashes are exactly "
+                    "{sha-256, blake2b-256} (D-01); others are a "
+                    "programmer error");
             }
         }
 
@@ -48,6 +51,10 @@ namespace sgns::blockstore
                     return "raw";
                 case libp2p::multi::MulticodecType::Code::DAG_PB:
                     return "dag-pb";
+                case libp2p::multi::MulticodecType::Code::DAG_CBOR:
+                    // The CRDT DAG block codec (Phase-6 widening): every
+                    // SuperGenius CRDT block is CIDv1/DAG_CBOR/blake2b-256.
+                    return "dag-cbor";
                 default:
                     return "unknown-codec";
             }
@@ -96,8 +103,9 @@ namespace sgns::blockstore
         const Cid& cid) const
     {
         // The spike-proven codec path (cid_spike_test.cpp): toString is
-        // lossless for sha256 CIDv1 and injective across CIDv0/v1. A
-        // failure here is practically unreachable - mapped defensively,
+        // lossless for sha-256 and blake2b-256 CIDv1 alike (the widened
+        // accepted pair, D-01) and injective across CIDv0/v1. A failure
+        // here is practically unreachable - mapped defensively,
         // never silently defaulted (a wrong key would misplace a block).
         auto cid_string =
             libp2p::multi::ContentIdentifierCodec::toString(cid);
@@ -121,7 +129,11 @@ namespace sgns::blockstore
         // adapter is touched. CidOf carries the default error type
         // (std::error_code), so its failure is mapped explicitly - never
         // OUTCOME_TRY'd across the BlockStatus-typed envelope.
-        auto computed = CidOf(bytes, cid.content_type);
+        // Phase-6 (D-04): recompute with the CID's OWN multihash type so
+        // blake2b-256 CIDs verify under blake2b-256 (the unsupported-hash
+        // throw is unreachable here - the entry gate already threw).
+        auto computed =
+            CidOf(bytes, cid.content_type, cid.content_address.getType());
         if (!computed)
         {
             return BlockStatus{StatusClass::Corrupt, BlockSource::Caller,
@@ -174,7 +186,9 @@ namespace sgns::blockstore
             // Re-verify the FETCHED bytes against the CID. Attribution
             // delta vs Put: mismatched bytes came from the REMOTE, so
             // the failure is Remote-sourced, never Caller.
-            auto computed = CidOf(bytes, cid.content_type);
+            // Phase-6 (D-04): branch on the CID's own multihash (see Put).
+            auto computed =
+                CidOf(bytes, cid.content_type, cid.content_address.getType());
             if (!computed)
             {
                 return BlockStatus{StatusClass::Corrupt,
@@ -237,7 +251,7 @@ namespace sgns::blockstore
     S3BlockStore::PutMany(gsl::span<const BlockInput> blocks,
                           const WriteOptions& options)
     {
-        // D-08 pre-validation of the WHOLE batch before any write (a
+        // D-01 pre-validation of the WHOLE batch before any write (a
         // mid-batch throw can never leave partial writes behind).
         for (const auto& input : blocks)
         {

@@ -71,19 +71,25 @@ namespace
         Cid cid_b_ = MakeCid(payload_b_);
     };
 
-    Cid Blake2bCid()
+    Cid Sha512Cid()
     {
-        // 32 arbitrary bytes as a blake2b-256 digest - the CRDT CBOR
-        // boundary shape that v1 must reject at API entry (D-08).
-        static const uint8_t digest[32] = {
+        // 64 arbitrary bytes as a sha-512 digest - the out-of-set
+        // rejection exemplar after the Phase-6 widening (D-01/D-03).
+        // 64 bytes fits Multihash::kMaxHashLength (127), so the multihash
+        // constructor succeeds and the ENTRY GATE is provably what throws.
+        static const uint8_t digest[64] = {
             0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
             0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
             0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
             0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28,
+            0x29, 0x2a, 0x2b, 0x2c, 0x2d, 0x2e, 0x2f, 0x30,
+            0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38,
+            0x39, 0x3a, 0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40,
         };
         return Cid(Cid::Version::V1, MulticodecType::Code::RAW,
-                   Multihash::create(HashType::blake2b_256,
-                                     gsl::span<const uint8_t>(digest, 32))
+                   Multihash::create(HashType::sha512,
+                                     gsl::span<const uint8_t>(digest, 64))
                        .value());
     }
 }
@@ -189,19 +195,38 @@ TEST_F(MemoryBlockStoreTest, GetSizeReportsExactByteCount)
 }
 
 /**
- * @given a blake2b-256 CID (the CRDT CBOR boundary shape)
+ * @given a sha-512 CID (the out-of-set exemplar after the Phase-6
+ *        widening)
  * @when Put, Get, or PutMany is called with it
- * @then std::invalid_argument is THROWN (D-08 programmer error, before
- *        any write) and nothing is stored
+ * @then std::invalid_argument is THROWN (D-01/D-03 programmer error,
+ *        before any write) and nothing is stored
  */
-TEST_F(MemoryBlockStoreTest, Blake2bCidThrowsInvalidArgument)
+TEST_F(MemoryBlockStoreTest, Sha512CidThrowsInvalidArgument)
 {
-    const Cid bad = Blake2bCid();
+    const Cid bad = Sha512Cid();
     EXPECT_THROW((void)store_->Put(bad, SpanOf(payload_a_)), std::invalid_argument);
     EXPECT_THROW((void)store_->Get(bad), std::invalid_argument);
     EXPECT_THROW((void)store_->Has(bad), std::invalid_argument);
     const BlockInput batch[] = {{bad, SpanOf(payload_a_)}};
     EXPECT_THROW((void)store_->PutMany(batch), std::invalid_argument);
+}
+
+/**
+ * @given the pinned CRDT-shape block {} (RFC 8949 a0) with its real
+ *        blake2b-256 CID (cross-check-log vector, D-02)
+ * @when Put then Get run on the widened memory backend
+ * @then the round trip is byte-identical (D-01 acceptance)
+ */
+TEST_F(MemoryBlockStoreTest, Blake2bDagCborPinnedVectorRoundTrip)
+{
+    const std::string payload("\xa0", 1);
+    const auto cid = CidOf(SpanOf(payload), MulticodecType::Code::DAG_CBOR,
+                           HashType::blake2b_256).value();
+    ASSERT_TRUE(store_->Put(cid, SpanOf(payload)));
+    auto got = store_->Get(cid);
+    ASSERT_TRUE(got);
+    EXPECT_EQ(got.value().bytes,
+              std::vector<uint8_t>(payload.begin(), payload.end()));
 }
 
 /**
@@ -332,16 +357,17 @@ TEST_F(MemoryBlockStoreTest, PutManyPreservesOrderAndNeverRollsBack)
 }
 
 /**
- * @given a PutMany batch containing a blake2b CID next to a valid entry
+ * @given a PutMany batch containing a sha-512 CID (out-of-set) next to
+ *        a valid entry
  * @when PutMany is called
  * @then std::invalid_argument is THROWN and the batch's VALID entries are
  *        NOT stored afterwards (pre-validation before any write)
  */
-TEST_F(MemoryBlockStoreTest, PutManyBlake2bThrowsAndWritesNothing)
+TEST_F(MemoryBlockStoreTest, PutManySha512ThrowsAndWritesNothing)
 {
     const BlockInput batch[] = {
         {cid_a_, SpanOf(payload_a_)},
-        {Blake2bCid(), SpanOf(payload_b_)},
+        {Sha512Cid(), SpanOf(payload_b_)},
     };
     EXPECT_THROW((void)store_->PutMany(batch), std::invalid_argument);
     EXPECT_FALSE(store_->Has(cid_a_).value()); // nothing written

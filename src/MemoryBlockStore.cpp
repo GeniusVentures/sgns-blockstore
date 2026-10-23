@@ -17,17 +17,21 @@ namespace sgns::blockstore
     {
         /**
          * @brief The single shared entry gate used by every public op:
-         *        rejects non-sha256 multihash CIDs as programmer error
-         *        (D-08) BEFORE any storage mutation.
+         *        rejects every multihash type outside {sha-256,
+         *        blake2b-256} as programmer error (D-01) BEFORE any
+         *        storage mutation.
          */
         void ValidateCidHash(const Cid& cid)
         {
-            if (cid.content_address.getType() != libp2p::multi::HashType::sha256)
+            const auto type = cid.content_address.getType();
+            if (type != libp2p::multi::HashType::sha256
+                && type != libp2p::multi::HashType::blake2b_256)
             {
                 throw std::invalid_argument(
-                    "sgns::blockstore: CID multihash type is not sha-256 - "
-                    "v1 accepts sha-256 CIDs only (D-08; blake2b CRDT CIDs "
-                    "are a documented v1 non-goal)");
+                    "sgns::blockstore: CID multihash type is not sha-256 "
+                    "or blake2b-256 - accepted hashes are exactly "
+                    "{sha-256, blake2b-256} (D-01); others are a "
+                    "programmer error");
             }
         }
 
@@ -68,7 +72,11 @@ namespace sgns::blockstore
         // NOTE: CidOf carries the default error type (std::error_code), so
         // its failure is mapped explicitly - never OUTCOME_TRY'd across the
         // BlockStatus-typed envelope (mismatched error types).
-        auto computed = CidOf(bytes, cid.content_type);
+        // Phase-6 (D-04): recompute with the CID's OWN multihash type so
+        // blake2b-256 CIDs verify under blake2b-256 (the unsupported-hash
+        // throw is unreachable here - the entry gate already threw).
+        auto computed =
+            CidOf(bytes, cid.content_type, cid.content_address.getType());
         if (!computed)
         {
             return BlockStatus{StatusClass::Corrupt, BlockSource::Caller,
@@ -105,7 +113,9 @@ namespace sgns::blockstore
         }
         if (options.verify)
         {
-            auto computed = CidOf(bytes, cid.content_type);
+            // Phase-6 (D-04): branch on the CID's own multihash (see Put).
+            auto computed =
+                CidOf(bytes, cid.content_type, cid.content_address.getType());
             if (!computed)
             {
                 return BlockStatus{StatusClass::Corrupt, BlockSource::Memory,
@@ -150,7 +160,7 @@ namespace sgns::blockstore
     MemoryBlockStore::PutMany(gsl::span<const BlockInput> blocks,
                               const WriteOptions& options)
     {
-        // D-08 pre-validation of the WHOLE batch before any write: a
+        // D-01 pre-validation of the WHOLE batch before any write: a
         // mid-batch throw can never leave partial writes behind.
         for (const auto& input : blocks)
         {
