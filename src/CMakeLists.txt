@@ -16,6 +16,11 @@ target_link_libraries(sgns-blockstore
     # 03 D-04 promotion installed the SDK-free S3Client INTERFACE header;
     # the minio-cpp-backed MinioS3Client impl and its header stay in src/).
     PRIVATE miniocpp::miniocpp
+    # blake2b-256 (CRDT DAG CID composition, Phase 6) is PRIVATE exactly
+    # like miniocpp: no installed header references blake2 (the hygiene
+    # guard bans the include), so it reaches the export set only as a
+    # LINK_ONLY entry.
+    PRIVATE ipfs-lite-cpp::blake2
 )
 
 target_include_directories(sgns-blockstore

@@ -31,6 +31,15 @@ find_package(RocksDB CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
 find_package(miniocpp CONFIG REQUIRED)
 
+# ipfs-lite-cpp provides the blake2b-256 implementation (target
+# ipfs-lite-cpp::blake2) - the same object code sgns::common::getCidOf
+# uses to hash every CRDT DAG block. Linking the ecosystem copy (never a
+# vendored second one) guarantees CID byte-compatibility by construction
+# and avoids the duplicate-symbol collision that two copies of the
+# unrenamed blake2b_* globals would cause once SuperGenius links both
+# archives (Phase-6 widening, v1.1 RESEARCH Q1).
+find_package(ipfs-lite-cpp CONFIG REQUIRED)
+
 if(GSL_INCLUDE_DIR)
     include_directories(${GSL_INCLUDE_DIR})
 endif()
