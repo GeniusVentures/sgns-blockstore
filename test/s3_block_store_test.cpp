@@ -159,6 +159,54 @@ TEST_F(S3BlockStoreTest, Blake2bGetCorruptedFetchIsCorruptWithRemoteSource)
 }
 
 /**
+ * @given a valid S3ClientConfig pointing at a deliberately non-listening
+ *        endpoint (127.0.0.1:1)
+ * @when OpenMinioS3Client constructs the production client
+ * @then construction succeeds without ANY network I/O - if construction
+ *        touched the network, the dead endpoint would fail it (the D-06
+ *        no-I/O proof; RESEARCH assumption A5). Credential values are
+ *        never printed (T-06-06).
+ */
+TEST_F(S3BlockStoreTest, OpenMinioS3ClientConstructsWithoutNetworkIO)
+{
+    sgns::blockstore::S3ClientConfig config;
+    config.endpoint = "127.0.0.1";
+    config.port = 1; // deliberately non-listening
+    config.bucket = "consumer-proof";
+    config.accessKey = "dummy-access";
+    config.secretKey = "dummy-secret";
+    auto opened = sgns::blockstore::OpenMinioS3Client(config);
+    ASSERT_TRUE(opened);
+    EXPECT_NE(opened.value(), nullptr);
+}
+
+/**
+ * @given an S3ClientConfig with an empty endpoint
+ * @when OpenMinioS3Client is called
+ * @then std::invalid_argument at the factory call site (programmer error)
+ */
+TEST_F(S3BlockStoreTest, OpenMinioS3ClientThrowsOnEmptyEndpoint)
+{
+    sgns::blockstore::S3ClientConfig config;
+    config.bucket = "consumer-proof";
+    EXPECT_THROW((void)sgns::blockstore::OpenMinioS3Client(config),
+                 std::invalid_argument);
+}
+
+/**
+ * @given an S3ClientConfig with an empty bucket
+ * @when OpenMinioS3Client is called
+ * @then std::invalid_argument at the factory call site (programmer error)
+ */
+TEST_F(S3BlockStoreTest, OpenMinioS3ClientThrowsOnEmptyBucket)
+{
+    sgns::blockstore::S3ClientConfig config;
+    config.endpoint = "127.0.0.1";
+    EXPECT_THROW((void)sgns::blockstore::OpenMinioS3Client(config),
+                 std::invalid_argument);
+}
+
+/**
  * @given a stored block
  * @when the identical CID/bytes pair is Put again
  * @then the SUCCESS slot reports alreadyPresent=true at the

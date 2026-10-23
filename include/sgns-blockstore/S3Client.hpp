@@ -46,6 +46,7 @@
 #define SGNS_BLOCKSTORE_S3CLIENT_HPP
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -180,6 +181,35 @@ namespace sgns::blockstore
          */
         virtual result<void, BlockStatus> Delete(const std::string& key) = 0;
     };
+
+    /**
+     * @brief Construct the production MinIO-backed S3 client behind the
+     *        SDK-free S3Client interface (Phase-6 LIB-02, D-05).
+     *
+     * The installed construction path for the real client: the
+     * minio-cpp-backed implementation (MinioS3Client) stays internal to
+     * the library - its header is deliberately NOT installed - so this
+     * free function is the only way an out-of-tree consumer obtains the
+     * production client, ready for S3BlockStore::Open.
+     *
+     * @param config endpoint/credentials/bucket. accessKey and secretKey
+     *        are credentials this library NEVER logs or prints;
+     *        tlsVerify is the only TLS-verification control (default
+     *        true, T-3-02)
+     * @return the constructed client, or a BlockStatus runtime failure
+     * @throws std::invalid_argument when endpoint or bucket is empty -
+     *         a programmer error, exactly the internal construction
+     *         path's contract
+     *
+     * @note D-06 contract: construction performs eager config validation
+     *       and ZERO network I/O - the client connects lazily per
+     *       operation. Port and path-style must therefore be correct AT
+     *       THE CALL: the SDK snapshots its BaseUrl when the client is
+     *       built, so later config field writes never reach the
+     *       constructed client.
+     */
+    result<std::shared_ptr<S3Client>, BlockStatus> OpenMinioS3Client(
+        const S3ClientConfig& config);
 } // namespace sgns::blockstore
 
 #endif // SGNS_BLOCKSTORE_S3CLIENT_HPP

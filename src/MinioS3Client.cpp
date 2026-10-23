@@ -269,4 +269,22 @@ namespace sgns::blockstore
         }
         return outcome::success(); // idempotent (S3 RemoveObject semantics)
     }
+
+    result<std::shared_ptr<S3Client>, BlockStatus> OpenMinioS3Client(
+        const S3ClientConfig& config)
+    {
+        // Installed-seam factory (Phase-6 LIB-02, D-05): delegate to the
+        // internal MinioS3Client::Open and type-erase the deleter into
+        // shared_ptr - MinioS3Client's destructor is exported from this
+        // library, so out-of-tree consumers never need the complete type
+        // (the internal header stays uninstalled). Throw-for-programmer-
+        // error / result-for-runtime-failure mirrors S3BlockStore::Open.
+        // Zero network I/O and zero logging on this path (D-06, T-06-06).
+        auto opened = MinioS3Client::Open(config);
+        if (!opened)
+        {
+            return opened.error();
+        }
+        return std::shared_ptr<S3Client>(std::move(opened.value()));
+    }
 } // namespace sgns::blockstore
