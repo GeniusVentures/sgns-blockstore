@@ -1,0 +1,24 @@
+# getcidof-crosscheck.log - D-02 evidence: the library's blake2b-256 CID
+# composition vs the real CRDT CID producer sgns::common::getCidOf.
+# Date: 2026-10-22 (Phase 6, plan 06-01, Task 2).
+# Method: payloads are RFC 8949 canonical CBOR maps, hand-derivable:
+#   {}                 -> a0
+#   {"key": 1}         -> a1636b657901
+#   {"hello": "world"} -> a16568656c6c6f65776f726c64
+# Source B (independent implementation): Python 3.13 stdlib
+#   hashlib.blake2b(bytes.fromhex('<payload>'), digest_size=32), RFC 7693
+#   conformant (command: python -c "import hashlib; print(hashlib.blake2b(
+#   bytes.fromhex('<hex>'), digest_size=32).hexdigest())").
+# Real producer: sgns::common::getCidOf
+#   (thirdparty/ipfs-lite-cpp/primitives/cid/cid.cpp:129) driven from the
+#   superbuild install tree (dev TU links ipfs-lite-cpp::cid; throwaway
+#   project under thirdparty/build/Windows/Debug/cid-crosscheck-dev/ is
+#   never committed - only this log is, s3d-spike evidence precedent).
+# MATCH means: Python digest == blake2b_256() digest == the digest embedded
+#   in the getCidOf CID's multihash, AND the CID is CIDv1/DAG_CBOR/
+#   blake2b-256. Pinned test literals in test/cid_spike_test.cpp and the
+#   conformance kit trace to the getcidof_cid values below.
+payload=a0 python_digest=d36a2619a672494604e11bb447cbcf5231e9f2ba25c2169177edc941bd50ad6c getcidof_cid=bafy2bzacedjwujqzuzzesrqe4en3ir6lz5jdd2psxis4efuro7w4sqn5kcwwy verdict=MATCH
+payload=a1636b657901 python_digest=5cd0f4e9ecd356e911fc8560515f9a77547bdcb77b8e6c607825b16640a32438 getcidof_cid=bafy2bzacebonb5hj5tjvn2ir7scwauk7tj3vi664w55y43dapas3czsaumsdq verdict=MATCH
+payload=a16568656c6c6f65776f726c64 python_digest=e7785feaf7bd4317ac600d1d16ec0bcad104494752537683a0292307dac6c15e getcidof_cid=bafy2bzacedtxqx7k666ugf5mmagr2fxmbpfncbcji5jfg5uduausgb62y3av4 verdict=MATCH
+SUMMARY: 3/3 MATCH

@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -166,4 +167,75 @@ TEST(CidSpikeTest, Part3StandaloneConsumerLinkBar)
     ASSERT_TRUE(cid_result);
     EXPECT_EQ(cid_result.value().version, ContentIdentifier::Version::V1);
     EXPECT_EQ(cid_result.value().content_address.getType(), HashType::sha256);
+}
+
+/**
+ * @given the RFC 8949 canonical CBOR map {} (single byte a0)
+ * @when the 3-arg CidOf composes a CIDv1/DAG_CBOR/blake2b-256 from it
+ * @then the CID string equals the literal pinned from the committed
+ *        getCidOf cross-check log (docs/evidence/blake2b-crosscheck/
+ *        getcidof-crosscheck.log) - two-source derived per D-02 (Python
+ *        hashlib, RFC 7693-conformant stdlib, vs the vendored reference
+ *        C exercised through the real producer sgns::common::getCidOf;
+ *        never pinned from memory - the Part-1 transcription-error
+ *        precedent at the top of this file is why)
+ */
+TEST(CidSpikeTest, Blake2bDagCborKnownVector)
+{
+    const uint8_t payload[] = {0xa0};
+    auto cid_result = sgns::blockstore::CidOf(
+        gsl::span<const uint8_t>(payload, sizeof(payload)),
+        MulticodecType::Code::DAG_CBOR,
+        HashType::blake2b_256);
+    ASSERT_TRUE(cid_result);
+    EXPECT_EQ(cid_result.value().version, ContentIdentifier::Version::V1);
+    EXPECT_EQ(cid_result.value().content_address.getType(),
+              HashType::blake2b_256);
+    auto str_result = ContentIdentifierCodec::toString(cid_result.value());
+    ASSERT_TRUE(str_result);
+    // Pinned from getcidof-crosscheck.log (payload=a0, verdict=MATCH):
+    // Python digest d36a2619...ad6c agreed with the digest embedded in
+    // this exact getCidOf output CID (D-02).
+    EXPECT_EQ(str_result.value(),
+              "bafy2bzacedjwujqzuzzesrqe4en3ir6lz5jdd2psxis4efuro7w4sqn5kcwwy");
+}
+
+/**
+ * @given the byte payload "hello world"
+ * @when the 3-arg CidOf is called with HashType::sha256 beside the
+ *               untouched 2-arg form
+ * @then both return the same CID - the 2-arg form is exactly the 3-arg
+ *               form pinned to sha-256 (D-04)
+ */
+TEST(CidSpikeTest, ThreeArgSha256EqualsTwoArg)
+{
+    auto two_arg = sgns::blockstore::CidOf(PayloadBytes(),
+                                           MulticodecType::Code::RAW);
+    auto three_arg = sgns::blockstore::CidOf(PayloadBytes(),
+                                             MulticodecType::Code::RAW,
+                                             HashType::sha256);
+    ASSERT_TRUE(two_arg);
+    ASSERT_TRUE(three_arg);
+    EXPECT_TRUE(two_arg.value() == three_arg.value());
+}
+
+/**
+ * @given a HashType outside the accepted pair {sha256, blake2b-256}
+ * @when the 3-arg CidOf is called with it (exemplars: sha512 and
+ *               blake2s128)
+ * @then std::invalid_argument is thrown at API entry - an out-of-set
+ *               hash is a programmer error, not a runtime failure (D-03)
+ */
+TEST(CidSpikeTest, ThreeArgUnsupportedHashThrows)
+{
+    const uint8_t payload[] = {0xa0};
+    const auto bytes = gsl::span<const uint8_t>(payload, sizeof(payload));
+    EXPECT_THROW(
+        sgns::blockstore::CidOf(bytes, MulticodecType::Code::DAG_CBOR,
+                                HashType::sha512),
+        std::invalid_argument);
+    EXPECT_THROW(
+        sgns::blockstore::CidOf(bytes, MulticodecType::Code::DAG_CBOR,
+                                HashType::blake2s128),
+        std::invalid_argument);
 }

@@ -25,6 +25,11 @@ set(_banned
     "GeniusSDK/"
     "GeniusWallet/"
     "minio"
+    # blake2 (Phase 6): the blake2b160.hpp include lives ONLY in
+    # src/Cid.cpp - it must never reach an installed header (the check
+    # greps include lines only, so Doxygen prose naming blake2b-256 in
+    # @note blocks cannot trip it).
+    "blake2"
     )
 
 set(_count 0)

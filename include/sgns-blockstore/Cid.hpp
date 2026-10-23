@@ -58,15 +58,41 @@ namespace sgns::blockstore
      * @param codec the content codec the CID records (e.g. RAW, DAG_PB)
      * @return the CIDv1 carrying a sha-256 multihash, or error
      *
-     * @note v1 hashes with sha-256 multihash ONLY (decision D-08): CidOf never
-     *       hashes with anything but sha-256, and any other hash code is
-     *       rejected at API entry as an invalid argument / programmer error.
-     *       Boundary: the repo's CRDT CBOR path (sgns::common::getCidOf)
-     *       produces blake2b-256 CIDs, which this v1 API therefore does NOT
-     *       accept. Widening to more hash functions later is additive.
+     * @note this form delegates to the 3-arg CidOf overload pinned to
+     *       sha-256 (Phase-6 widening, D-04); callers needing the blake2b-256
+     *       shape every CRDT DAG block carries (the sgns::common::getCidOf
+     *       output) must use the 3-arg overload below. Accepted hash types
+     *       across the CidOf surface are exactly {sha-256, blake2b-256}
+     *       (D-01); any other hash is a programmer error (D-03).
      */
     outcome::result<Cid> CidOf(gsl::span<const uint8_t> bytes,
                                libp2p::multi::MulticodecType::Code codec);
+
+    /**
+     * @brief Construct the verified CID for a block payload with an
+     *        explicit multihash type.
+     *
+     * Overload for CID shapes beyond sha-256: composes the payload digest
+     * with the requested hash type and codec exactly the way the ecosystem
+     * producers do. The blake2b-256 branch mirrors sgns::common::getCidOf
+     * (the CID every SuperGenius CRDT DAG block carries) using the same
+     * vendored blake2b object code, so CID equality with the real producer
+     * holds by construction (Phase-6 widening, D-04; evidenced against
+     * getCidOf in docs/evidence/blake2b-crosscheck/).
+     *
+     * @param bytes the block payload to hash
+     * @param codec the content codec the CID records (e.g. RAW, DAG_CBOR)
+     * @param hash the multihash type to compose; accepted values are
+     *        exactly sha256 and blake2b_256 (D-01)
+     * @return the CIDv1 carrying the requested multihash, or error
+     *
+     * @throws std::invalid_argument when hash is any HashType other than
+     *         sha256 or blake2b_256 - an out-of-set hash is a programmer
+     *         error, not a runtime failure (D-03)
+     */
+    outcome::result<Cid> CidOf(gsl::span<const uint8_t> bytes,
+                               libp2p::multi::MulticodecType::Code codec,
+                               libp2p::multi::HashType hash);
 }
 
 #endif  // SGNS_BLOCKSTORE_CID_HPP
