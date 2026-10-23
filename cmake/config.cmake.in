@@ -2,5 +2,15 @@
 
 include(CMakeFindDependencyMacro)
 find_dependency(RocksDB CONFIG)
+# Phase-6 hardening (LIB-02, D-07): each line below was FORCED by the
+# out-of-tree consumer proof (test/out_of_tree_consumer) - the exported
+# target's interface references p2p::p2p_cid and the LINK_ONLY entries
+# miniocpp::miniocpp + ipfs-lite-cpp::blake2, which do not exist in a
+# consumer context until these run. Nothing else is added: anything the
+# minimal consumer does not force defers to Phase 7's real
+# CommonBuildParameters.cmake consumption.
+find_dependency(libp2p CONFIG)
+find_dependency(ipfs-lite-cpp CONFIG)
+find_dependency(miniocpp CONFIG)
 
 include ( "${CMAKE_CURRENT_LIST_DIR}/sgns-blockstoreTargets.cmake" )

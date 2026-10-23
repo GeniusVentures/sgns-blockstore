@@ -216,3 +216,52 @@ set_tests_properties(header_hygiene PROPERTIES LABELS "Tier1")
 add_test(NAME tier1_static_audit
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tier1_audit_check.cmake)
 set_tests_properties(tier1_static_audit PROPERTIES LABELS "Tier1")
+
+# Phase 6 (LIB-02, D-08): out-of-tree install-tree consumer proof - a
+# STANDALONE project doing find_package(sgns-blockstore CONFIG REQUIRED)
+# against the install tree; compile+link+construct only, zero network
+# (constructing against the non-listening 127.0.0.1:1 endpoint IS the
+# D-06 no-I/O proof at the consumer boundary). Every *_DIR hint comes
+# from this sub-build's already-resolved cache, so miniocpp-deps.cmake
+# resolves httplib/nlohmann_json/pugixml via config dirs and its
+# git-clone-source fallback can never run (T-06-07). Boost.DI's dotted
+# cache name cannot ride a command-line -D, so its install root rides
+# CMAKE_PREFIX_PATH instead (compose it here from the resolved cache).
+get_filename_component(_BOOST_DI_ROOT "${Boost.DI_DIR}/../../.." ABSOLUTE)
+add_test(NAME out_of_tree_consumer_proof
+    COMMAND ${CMAKE_COMMAND}
+        -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/out_of_tree_consumer
+        -DBUILD_DIR=${CMAKE_BINARY_DIR}/out-of-tree-consumer-proof
+        -DCONFIG=$<CONFIG>
+        "-DCMAKE_PREFIX_PATH=${CMAKE_PREFIX_PATH};${_BOOST_DI_ROOT}"
+        -DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH}
+        -DZLIB_SUPERBUILD_TARGETS_FILE=${ZLIB_SUPERBUILD_TARGETS_FILE}
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=${CMAKE_MSVC_RUNTIME_LIBRARY}
+        -DBoost_USE_STATIC_RUNTIME=${Boost_USE_STATIC_RUNTIME}
+        -DGSL_INCLUDE_DIR=${GSL_INCLUDE_DIR}
+        -Dsgns-blockstore_DIR=${CMAKE_INSTALL_PREFIX}/lib/cmake/sgns-blockstore
+        -Dlibp2p_DIR=${libp2p_DIR}
+        -DRocksDB_DIR=${RocksDB_DIR}
+        -DSnappy_DIR=${Snappy_DIR}
+        -Dminiocpp_DIR=${miniocpp_DIR}
+        -Dhttplib_DIR=${httplib_DIR}
+        -Dnlohmann_json_DIR=${nlohmann_json_DIR}
+        -Dpugixml_DIR=${pugixml_DIR}
+        -Dipfs-lite-cpp_DIR=${ipfs-lite-cpp_DIR}
+        -DBoost_DIR=${Boost_DIR}
+        -DProtobuf_DIR=${Protobuf_DIR}
+        -Dc-ares_DIR=${c-ares_DIR}
+        -Dfmt_DIR=${fmt_DIR}
+        -Dyaml-cpp_DIR=${yaml-cpp_DIR}
+        -Dsoralog_DIR=${soralog_DIR}
+        -Dspdlog_DIR=${spdlog_DIR}
+        -Dtsl_hat_trie_DIR=${tsl_hat_trie_DIR}
+        -DSQLiteModernCpp_DIR=${SQLiteModernCpp_DIR}
+        -Dsqlite3_DIR=${sqlite3_dir}
+        -Dabsl_DIR=${absl_DIR}
+        -Dutf8_range_DIR=${utf8_range_DIR}
+        -DOPENSSL_ROOT_DIR=${OPENSSL_ROOT_DIR}
+        -DOPENSSL_USE_STATIC_LIBS=${OPENSSL_USE_STATIC_LIBS}
+        -DOPENSSL_MSVC_STATIC_RT=${OPENSSL_MSVC_STATIC_RT}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/out_of_tree_consumer/run_consumer_proof.cmake)
+set_tests_properties(out_of_tree_consumer_proof PROPERTIES LABELS "Tier1")
