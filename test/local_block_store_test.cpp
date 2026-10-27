@@ -20,11 +20,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <system_error>
 #include <vector>
+
+#include <rocksdb/db.h>
+#include <rocksdb/options.h>
+
+#include <libp2p/multi/content_identifier_codec.hpp>
 
 #include <sgns-blockstore/Cid.hpp>
 #include <sgns-blockstore/FaultController.hpp>
@@ -827,4 +833,127 @@ TEST(LocalBlockStoreJournal, CidV0DagPbClaimAcceptedAndStillVerifies)
     auto bad = store->Put(claimed_v0, SpanOf("cidv0 wrong payload"));
     ASSERT_FALSE(bad.has_value());
     EXPECT_EQ(bad.error().code, StatusClass::Corrupt);
+}
+
+/**
+ * @given a fresh store and one Put-born block (D-01, v1.1 Phase 11)
+ * @when  the spill timestamp is read, the block re-Put, then marked
+ *        Durable and enumerated
+ * @then  the birth stamp is ~= now (birth-atomic: written in Put's own
+ *        batch), a re-Put does NOT churn it (no timestamp drift on the
+ *        already-present path), and GetDurableWithSpillTime pairs the
+ *        Durable record with that exact stamp.
+ */
+TEST(LocalBlockStoreJournal, SpillTimestampBirthAtomicAndRePutStable)
+{
+    auto store = MakeStore("test-data/local-blockstore/spill-times-case");
+    ASSERT_NE(store, nullptr);
+
+    const std::string payload = "spill timestamp birth payload";
+    const Cid cid = MakeCid(payload);
+    ASSERT_TRUE(store->Put(cid, SpanOf(payload)).has_value());
+
+    const uint64_t before_ms = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    auto birth = store->GetSpilledAt(cid);
+    ASSERT_TRUE(birth.has_value());
+    // ~= now: birth-atomic (a generous window absorbs scheduler jitter -
+    // the assertion is that a REAL stamp exists, not a fabricated 0).
+    EXPECT_GE(birth.value(), before_ms - 5000u);
+    EXPECT_LE(birth.value(), before_ms + 5000u);
+
+    // Re-Put of an existing block writes NO new journal/spill record.
+    ASSERT_TRUE(store->Put(cid, SpanOf(payload)).has_value());
+    auto still_birth = store->GetSpilledAt(cid);
+    ASSERT_TRUE(still_birth.has_value());
+    EXPECT_EQ(still_birth.value(), birth.value());
+
+    ASSERT_TRUE(store->MarkUploadedDurable(cid).has_value());
+    auto durable = store->GetDurableWithSpillTime();
+    ASSERT_TRUE(durable.has_value());
+    ASSERT_EQ(durable.value().size(), 1u);
+    EXPECT_TRUE(durable.value()[0].cid == cid);
+    EXPECT_EQ(durable.value()[0].spilled_at_unix_ms, birth.value());
+}
+
+/**
+ * @given a store directory crafted with ONLY the pre-Phase-11 descriptor
+ *        set (raw RocksDB: default + blocks + upload_journal, a Durable
+ *        journal record + block bytes, NO spill_times CF)
+ * @when  LocalBlockStore::Open extends the store in place
+ * @then  Open succeeds via create_missing_column_families (A1), the
+ *        journal state reads back intact (Durable), GetSpilledAt reads
+ *        the clean NotFound absence, GetDurableWithSpillTime reports
+ *        spilled_at 0 (absent, never fabricated), and the SetSpilledAt
+ *        backfill round-trips (the under-eviction-safe pre-Phase-11
+ *        migration).
+ */
+TEST(LocalBlockStoreJournal, OldStoreReopenCreatesSpillTimesAndBackfills)
+{
+    const std::string dir = "test-data/local-blockstore/old-store-reopen-case";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+
+    const std::string payload = "pre-phase-11 durable payload";
+    const Cid cid = MakeCid(payload);
+    auto encoded = libp2p::multi::ContentIdentifierCodec::encode(cid);
+    ASSERT_TRUE(encoded.has_value());
+    const std::string key(encoded.value().begin(), encoded.value().end());
+
+    // Craft the OLD (3-CF) store: block bytes + a Durable journal record
+    // (version 0x01, state 0x02 - the JournalRecord encoding contract).
+    {
+        rocksdb::DBOptions db_options;
+        db_options.create_if_missing = true;
+        db_options.create_missing_column_families = true;
+        const std::vector<rocksdb::ColumnFamilyDescriptor> old_descriptors = {
+            rocksdb::ColumnFamilyDescriptor{},
+            {sgns::blockstore::kBlocksColumnFamilyName, rocksdb::ColumnFamilyOptions()},
+            {sgns::blockstore::kUploadJournalColumnFamilyName, rocksdb::ColumnFamilyOptions()},
+        };
+        std::vector<rocksdb::ColumnFamilyHandle*> handles;
+        rocksdb::DB* raw = nullptr;
+        ASSERT_TRUE(rocksdb::DB::Open(db_options, dir, old_descriptors, &handles, &raw).ok());
+        ASSERT_TRUE(raw->Put(rocksdb::WriteOptions(), handles[1], key, payload).ok());
+        ASSERT_TRUE(raw->Put(rocksdb::WriteOptions(), handles[2], key,
+                             std::string{'\x01', '\x02'}).ok());
+        for (auto* handle : handles)
+        {
+            if (handle != nullptr)
+            {
+                raw->DestroyColumnFamilyHandle(handle);
+            }
+        }
+        delete raw; // releases the LOCK so LocalBlockStore::Open succeeds
+    }
+
+    // A1: Open extends the old store in place (spill_times auto-created).
+    auto store = ReopenStore(dir);
+    ASSERT_NE(store, nullptr);
+
+    auto state = store->GetUploadState(cid);
+    ASSERT_TRUE(state.has_value());
+    EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+
+    auto absent = store->GetSpilledAt(cid);
+    ASSERT_FALSE(absent.has_value());
+    EXPECT_EQ(absent.error().code, StatusClass::NotFound); // clean absence
+
+    auto durable = store->GetDurableWithSpillTime();
+    ASSERT_TRUE(durable.has_value());
+    ASSERT_EQ(durable.value().size(), 1u);
+    EXPECT_EQ(durable.value()[0].spilled_at_unix_ms, 0u); // never fabricated
+
+    // The backfill surface round-trips.
+    constexpr uint64_t kBackfillStamp = 1700000000000ull;
+    ASSERT_TRUE(store->SetSpilledAt(cid, kBackfillStamp).has_value());
+    auto backfilled = store->GetSpilledAt(cid);
+    ASSERT_TRUE(backfilled.has_value());
+    EXPECT_EQ(backfilled.value(), kBackfillStamp);
+    auto durable_now = store->GetDurableWithSpillTime();
+    ASSERT_TRUE(durable_now.has_value());
+    ASSERT_EQ(durable_now.value().size(), 1u);
+    EXPECT_EQ(durable_now.value()[0].spilled_at_unix_ms, kBackfillStamp);
 }
