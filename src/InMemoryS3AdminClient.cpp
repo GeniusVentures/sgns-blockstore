@@ -57,7 +57,7 @@ namespace sgns::blockstore
     }
 
     result<void, BlockStatus> InMemoryS3AdminClient::Flush(
-        std::chrono::milliseconds /*read_timeout_budget*/ )
+        std::chrono::milliseconds read_timeout_budget )
     {
         S3AdminFaultKind fault;
         uint32_t         delay_ms;
@@ -71,8 +71,21 @@ namespace sgns::blockstore
         }
         // The scripted delay sleeps OUTSIDE the mutex so scripting from
         // the test thread is never blocked by an in-flight slow flush.
+        // Budget-faithful slow flush (v1.1 Phase 10 plan 10-02): a delay
+        // beyond the caller's read budget surfaces as the client-side
+        // TIMEOUT the real client would produce after the budget elapses
+        // - the fake honors the contract, so bounded-stop proofs work
+        // through it.
         if ( delay_ms > 0 )
         {
+            const auto budget_ms = static_cast<uint32_t>( read_timeout_budget.count() );
+            if ( delay_ms > budget_ms && budget_ms > 0 )
+            {
+                std::this_thread::sleep_for( std::chrono::milliseconds( budget_ms ) );
+                return BlockStatus{ StatusClass::TemporarilyUnavailable,
+                                    BlockSource::Remote,
+                                    "scripted slow flush exceeded the read budget (timeout)" };
+            }
             std::this_thread::sleep_for( std::chrono::milliseconds( delay_ms ) );
         }
         if ( fault == S3AdminFaultKind::Unreachable || fault == S3AdminFaultKind::FlushFails )
