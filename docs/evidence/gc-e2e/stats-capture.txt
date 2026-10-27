@@ -1,0 +1,68 @@
+# s3d Console Capture (TEST-03, Phase 11 plan 11-04) — corroborating evidence
+
+Source: the s3d daemon console for the 2026-10-27 session (operator-pasted).
+No credentials appear in this log (loopback endpoints are the documented
+defaults). Curated: the 30-second retry cycle of the first E2E attempt is
+shown once at its start and once at its end with an explicit ellipsis; the
+ceiling-mode session (19:06 onward) is complete.
+
+Reading guide (cross-checked against run-capture.md):
+
+1. 18:39:29 - s3d v0.2.1 started; listeners match the session env gates.
+2. 18:46:33 - the first E2E attempt's 3 uploads ACCEPTED by s3d
+   ("created upload group objects=3 size=173" - three ~58-byte payloads,
+   matching reclaimed_bytes=58). The Sia FINALIZE never completed: each
+   "uploading object group" is followed 30s later by "failed to finalize
+   upload {context canceled}". The 30s spacing equals the E2E client's
+   flush read budget - each client timeout canceled s3d's in-flight
+   finalize (~30 cycles, 18:46:33 -> 19:01:33 = the 900s failed run).
+3. 19:06:40 / 19:07:36 / 19:08:14 - the three ceiling-mode runs
+   (digest-fix run, green run, verbose capture run). Each adds 3 new
+   objects; groups grow 6 -> 9 -> 12 objects (346 -> 520 -> 694 bytes)
+   because the unfinalized staged set rides along in each new group.
+   Cancels now occur at the 5s ceiling-mode budget.
+4. NO GET lines appear anywhere: the backend.sia logger only records
+   Sia-bound traffic, so the post-eviction retrieval was served from
+   s3d's LOCAL STAGING, not from Sia. With finalization never completing
+   ("waste: 100.00%"), this pins the session's durability posture: the
+   S3-API-level vertical (spill -> evict -> CID-verified retrieve against
+   the real s3d backend) is PROVEN; the Sia-cloud durability leg is NOT
+   proven this session (the documented accepted-is-max-provable ceiling,
+   log-corroborated). Proving the Sia leg requires funded rent - rerun
+   with a LONG flush budget once the wallet is funded (the 30s/5s client
+   budgets actively cancel s3d's finalize attempts).
+
+---
+
+2026-10-27T18:39:18-04:00       INFO    s3d     {"version": "v0.2.1", "commit": "312789a", "buildDate": "2026-10-06T15:03:38-04:00"}
+2026-10-27T18:39:29-04:00       INFO    backend.sia     pruning orphaned slabs
+2026-10-27T18:39:29-04:00       INFO    server started  {"admin": "127.0.0.1:8001", "application": "127.0.0.1:8000"}
+2026-10-27T18:39:29-04:00       INFO    backend.sia     finished pruning orphaned slabs from Sia network        {"elapsed": "60.2553ms"}
+2026-10-27T18:46:33-04:00       INFO    backend.sia     created upload group    {"objects": 3, "size": 173, "slabs": 1, "waste": "100.00%"}
+2026-10-27T18:46:33-04:00       INFO    backend.sia     uploading object group  {"size": 173, "slabs": 1, "waste": "100.00%", "n": 3}
+2026-10-27T18:47:03-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T18:47:03-04:00       INFO    backend.sia     created upload group    {"objects": 3, "size": 173, "slabs": 1, "waste": "100.00%"}
+2026-10-27T18:47:03-04:00       INFO    backend.sia     uploading object group  {"size": 173, "slabs": 1, "waste": "100.00%", "n": 3}
+[... the identical 30-second upload-group/finalize-canceled cycle repeats every 30s from 18:47:33 through 19:01:03 (~30 cycles total, one per E2E flush attempt; objects stay 3 / size 173 - no new uploads, only finalize retries) ...]
+2026-10-27T19:01:03-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:01:03-04:00       INFO    backend.sia     created upload group    {"objects": 3, "size": 173, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:01:03-04:00       INFO    backend.sia     uploading object group  {"size": 173, "slabs": 1, "waste": "100.00%", "n": 3}
+2026-10-27T19:01:33-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:06:40-04:00       INFO    backend.sia     created upload group    {"objects": 6, "size": 346, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:06:40-04:00       INFO    backend.sia     uploading object group  {"size": 346, "slabs": 1, "waste": "100.00%", "n": 6}
+2026-10-27T19:06:45-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:06:45-04:00       INFO    backend.sia     created upload group    {"objects": 6, "size": 346, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:06:45-04:00       INFO    backend.sia     uploading object group  {"size": 346, "slabs": 1, "waste": "100.00%", "n": 6}
+2026-10-27T19:06:50-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:07:36-04:00       INFO    backend.sia     created upload group    {"objects": 9, "size": 520, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:07:36-04:00       INFO    backend.sia     uploading object group  {"size": 520, "slabs": 1, "waste": "100.00%", "n": 9}
+2026-10-27T19:07:41-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:07:41-04:00       INFO    backend.sia     created upload group    {"objects": 9, "size": 520, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:07:41-04:00       INFO    backend.sia     uploading object group  {"size": 520, "slabs": 1, "waste": "100.00%", "n": 9}
+2026-10-27T19:07:46-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:08:14-04:00       INFO    backend.sia     created upload group    {"objects": 12, "size": 694, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:08:14-04:00       INFO    backend.sia     uploading object group  {"size": 694, "slabs": 1, "waste": "100.00%", "n": 12}
+2026-10-27T19:08:19-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}
+2026-10-27T19:08:19-04:00       INFO    backend.sia     created upload group    {"objects": 12, "size": 694, "slabs": 1, "waste": "100.00%"}
+2026-10-27T19:08:19-04:00       INFO    backend.sia     uploading object group  {"size": 694, "slabs": 1, "waste": "100.00%", "n": 12}
+2026-10-27T19:08:24-04:00       ERROR   backend.sia     failed to finalize upload       {"error": "context canceled"}

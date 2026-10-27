@@ -9,6 +9,17 @@ directly. The proven claim - eviction + CID-verified retrieval against the real
 s3d backend - is unaffected by how Durable was reached. Uploads were REAL (the
 drain asserts passed against the live endpoint).
 
+LOG-CORROBORATED PRECISION (see stats-capture.txt, the s3d console for this
+session): s3d accepted every upload into its staging (groups of 3 objects /
+173 bytes per run, matching reclaimed_bytes=58 for one ~58-byte block); every
+Sia finalize attempt failed ("context canceled" - client read budgets of 30s/5s
+canceled s3d's in-flight finalize; waste 100%); and the post-eviction GET was
+served from s3d's LOCAL STAGING (no backend.sia GET activity exists). So: the
+S3-API-level vertical is PROVEN live; the Sia-cloud durability leg is NOT
+proven this session - exactly the documented ceiling. Rerun with funded rent
+and a LONG flush budget to prove the Sia leg (short client budgets actively
+cancel the finalize).
+
 ```
 15: [SGNS_BLOCKSTORE][s3d-gc-e2e][RUN-1] spill complete: blocks=3 journal=UploadedDurable flush_evidence=SKIP_MODE_CEILING_DOCUMENTED
 15: [SGNS_BLOCKSTORE][s3d-gc-e2e][RUN-2] eviction complete: local=absent marker=present
