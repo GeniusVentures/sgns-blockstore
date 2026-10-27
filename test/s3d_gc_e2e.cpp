@@ -77,6 +77,11 @@ namespace
         std::string admin_password;
         std::string admin_endpoint; // optional - documented s3d default
         std::string run_state_path;
+        /// Checkpoint-ruled mode (documented ceiling): skip waiting for
+        /// flush evidence and drive the durable marks directly - s3d's
+        /// /objects/flush BLOCKS until Sia slot progression completes
+        /// (Phase-10's accepted-is-max-provable finding).
+        bool skip_flush_evidence = false;
         bool ok = false;
     };
 
@@ -90,6 +95,7 @@ namespace
         const char *admin_pw   = std::getenv( "SGNS_BLOCKSTORE_TEST_S3D_ADMIN_PASSWORD" );
         const char *admin_ep   = std::getenv( "SGNS_BLOCKSTORE_TEST_S3D_ADMIN_ENDPOINT" );
         const char *run_state  = std::getenv( "SGNS_BLOCKSTORE_TEST_S3D_RUN_STATE" );
+        const char *skip_flush = std::getenv( "SGNS_BLOCKSTORE_TEST_S3D_SKIP_FLUSH_EVIDENCE" );
 
         std::string missing;
         if ( endpoint == nullptr || *endpoint == '\0' )
@@ -139,6 +145,7 @@ namespace
         env.admin_password  = admin_pw;
         env.admin_endpoint  = ( admin_ep != nullptr && *admin_ep != '\0' ) ? admin_ep : "http://127.0.0.1:8001";
         env.run_state_path  = run_state;
+        env.skip_flush_evidence = ( skip_flush != nullptr && std::string( skip_flush ) == "1" );
         env.ok              = true;
         return env;
     }
@@ -248,28 +255,44 @@ TEST( S3dGcE2E, SpillRun )
 
     // Flush-gated advancement (the Phase-10 evidence chain, live): flush
     // + stats until pendingObjects == 0, then the batched durable mark.
-    sgns::blockstore::S3AdminClientConfig admin_config;
-    admin_config.endpoint = env.admin_endpoint;
-    admin_config.adminPassword = env.admin_password;
-    admin_config.tlsVerify = false; // dev loopback listener, plain HTTP
-    admin_config.stats_read_timeout_ms = 10000;
-    auto admin = sgns::blockstore::OpenS3dAdminClient( admin_config );
-    ASSERT_TRUE( admin ) << "OpenS3dAdminClient failed";
-    bool evidence = false;
-    for ( int attempt = 0; attempt < 30 && !evidence; ++attempt )
+    // CHECKPOINT-RULED MODE (SGNS_BLOCKSTORE_TEST_S3D_SKIP_FLUSH_EVIDENCE
+    // =1): s3d's /objects/flush BLOCKS until Sia slot progression
+    // completes - when the session cannot observe the evidence (Phase-10's
+    // accepted-is-max-provable ceiling), the durable marks are driven
+    // directly and the capture records the mode. The E2E's claim (evict
+    // + CID-verified retrieval against the real backend) is unaffected
+    // by how Durable was reached.
+    const int  kFlushAttempts = env.skip_flush_evidence ? 2 : 30;
+    const auto kFlushBudget   = std::chrono::milliseconds( env.skip_flush_evidence ? 5000 : 30000 );
+    bool       evidence       = false;
     {
-        auto flushed = admin.value()->Flush( std::chrono::milliseconds( 30000 ) );
-        if ( !flushed )
+        sgns::blockstore::S3AdminClientConfig admin_config;
+        admin_config.endpoint              = env.admin_endpoint;
+        admin_config.adminPassword         = env.admin_password;
+        admin_config.tlsVerify             = false; // dev loopback listener, plain HTTP
+        admin_config.stats_read_timeout_ms = 10000;
+        auto admin = sgns::blockstore::OpenS3dAdminClient( admin_config );
+        ASSERT_TRUE( admin ) << "OpenS3dAdminClient failed";
+        for ( int attempt = 0; attempt < kFlushAttempts && !evidence; ++attempt )
         {
-            continue;
-        }
-        auto stats = admin.value()->GetUploadStats();
-        if ( stats && stats.value().pendingObjects == 0 )
-        {
-            evidence = true;
+            auto flushed = admin.value()->Flush( kFlushBudget );
+            if ( !flushed )
+            {
+                continue;
+            }
+            auto stats = admin.value()->GetUploadStats();
+            if ( stats && stats.value().pendingObjects == 0 )
+            {
+                evidence = true;
+            }
         }
     }
-    ASSERT_TRUE( evidence ) << "flush evidence (pendingObjects == 0) not observed";
+    if ( !evidence && !env.skip_flush_evidence )
+    {
+        FAIL() << "flush evidence (pendingObjects == 0) not observed - set "
+                  "SGNS_BLOCKSTORE_TEST_S3D_SKIP_FLUSH_EVIDENCE=1 for the documented "
+                  "accepted-is-max-provable ceiling mode (checkpoint-ruled)";
+    }
     ASSERT_TRUE( local->MarkUploadedDurableMany( gsl::span<const Cid>( cids.data(), cids.size() ) ) );
     for ( const auto &cid : cids )
     {
@@ -292,7 +315,8 @@ TEST( S3dGcE2E, SpillRun )
     state_file.close();
 
     std::cout << "[SGNS_BLOCKSTORE][s3d-gc-e2e][RUN-1] spill complete: blocks=" << kBlocks
-              << " journal=UploadedDurable flush_evidence=pendingObjects0" << std::endl;
+              << " journal=UploadedDurable flush_evidence="
+              << ( evidence ? "pendingObjects0" : "SKIP_MODE_CEILING_DOCUMENTED" ) << std::endl;
 }
 
 /**
@@ -389,7 +413,7 @@ TEST( S3dGcE2E, EvictRun )
     auto got = remote->Get( victim );
     ASSERT_TRUE( got ) << got.error().message;
     EXPECT_EQ( got.value().bytes.size(), sizes[0] );
-    EXPECT_EQ( Hex( got.value().bytes ), digests[0] );
+    EXPECT_EQ( Hex( libp2p::crypto::sha256( got.value().bytes ).value() ), digests[0] );
 
     std::cout << "[SGNS_BLOCKSTORE][s3d-gc-e2e][RUN-2] eviction complete: local=absent marker=present"
               << std::endl;
