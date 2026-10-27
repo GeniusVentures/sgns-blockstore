@@ -22,6 +22,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <future>
 #include <memory>
 #include <string>
 #include <thread>
@@ -92,11 +93,19 @@ namespace
 
     //
     // Black-hole listener for the bounded-read proof: accepts one
-    // connection and never responds (WinSock, 127.0.0.1 only).
+    // connection and never responds (WinSock, 127.0.0.1 only). The hold
+    // is EVENT-DRIVEN (a future released at Stop - the Tier-1 audit bans
+    // fixed-sleep constructs, and the client's read budget is the only
+    // escape for the caller either way).
     //
     class BlackholeListener
     {
     public:
+        BlackholeListener()
+            : released_( release_.get_future() )
+        {
+        }
+
         ~BlackholeListener()
         {
             Stop();
@@ -151,6 +160,7 @@ namespace
                 closesocket( socket_ );
                 socket_ = INVALID_SOCKET;
             }
+            release_.set_value(); // release the hold (idempotent-safe: set once)
             if ( thread_.joinable() )
             {
                 thread_.join();
@@ -165,19 +175,21 @@ namespace
             const SOCKET accepted = accept( socket_, nullptr, nullptr );
             if ( accepted != INVALID_SOCKET )
             {
-                // Hold the connection open WITHOUT ever responding -
-                // the client's read budget is the only escape.
-                std::this_thread::sleep_for( std::chrono::seconds( 3 ) );
+                // Hold the connection open WITHOUT ever responding until
+                // Stop releases the future - no timed sleep anywhere.
+                released_.wait();
                 closesocket( accepted );
             }
 #endif
         }
 
 #ifdef _WIN32
-        SOCKET       socket_ = INVALID_SOCKET;
+        SOCKET             socket_ = INVALID_SOCKET;
 #endif
-        uint16_t     port_ = 0;
-        std::thread  thread_;
+        uint16_t           port_ = 0;
+        std::promise<void> release_;
+        std::future<void>  released_;
+        std::thread        thread_;
     };
 } // namespace
 
