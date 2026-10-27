@@ -225,6 +225,44 @@ endif()
 # D-13: dev-gated two-run fresh-process E2E - Tier3 (never CI).
 set_tests_properties(s3d_roundtrip_e2e PROPERTIES LABELS "Tier3")
 
+# TEST-03 (v1.1 Phase 11 plan 11-04): dev-gated live s3d GC E2E - spill ->
+# flush-gated Durable -> evict -> CID-verified retrieval, two-run
+# fresh-process shape. TIER3 ONLY (env-gated loud skip; never CI).
+addtest(s3d_gc_e2e s3d_gc_e2e.cpp)
+target_include_directories(s3d_gc_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(s3d_gc_e2e
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+    OpenSSL::Crypto
+    OpenSSL::SSL
+)
+if(WIN32)
+    target_link_libraries(s3d_gc_e2e ws2_32)
+endif()
+set_tests_properties(s3d_gc_e2e PROPERTIES LABELS "Tier3")
+
+# TEST-03 (v1.1 Phase 11 plan 11-04): MinIO-binary opt-in GC roundtrip -
+# spill -> durable (hermetic admin semantics, A7) -> evict -> retrieve
+# CID-verified over a REAL community MinIO. TIER2 ONLY (env-gated loud
+# skip; never CI).
+addtest(gc_minio_roundtrip_test
+    gc_minio_roundtrip_test.cpp
+    MinioServerHarness.cpp
+)
+target_include_directories(gc_minio_roundtrip_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(gc_minio_roundtrip_test
+    sgns-blockstore
+    p2p::p2p_cid
+    miniocpp::miniocpp
+    OpenSSL::Crypto
+    OpenSSL::SSL
+)
+if(WIN32)
+    target_link_libraries(gc_minio_roundtrip_test ws2_32)
+endif()
+set_tests_properties(gc_minio_roundtrip_test PROPERTIES LABELS "Tier2")
+
 add_test(NAME header_hygiene
     COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
 set_tests_properties(header_hygiene PROPERTIES LABELS "Tier1")
