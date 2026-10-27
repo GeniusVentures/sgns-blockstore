@@ -89,6 +89,26 @@ target_link_libraries(in_memory_s3_client_test
 )
 set_tests_properties(in_memory_s3_client_test PROPERTIES LABELS "Tier1")
 
+# s3d admin facade wire lane (DUR-01, v1.1 Phase 10 plan 10-01): the REAL
+# cpp-httplib client (OpenS3dAdminClient) against the raw-socket
+# LoopbackHttpStub - header-on-the-wire auth evidence, the failure
+# taxonomy per scripted shape, and the bounded-read proof (Pitfall 4).
+# src/ include path reaches the InMemoryS3AdminClient fake for contrast
+# cases; ws2_32 links the stub's raw sockets on Windows.
+addtest(s3_admin_client_test
+    s3_admin_client_test.cpp
+    LoopbackHttpStub.cpp
+)
+target_include_directories(s3_admin_client_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_link_libraries(s3_admin_client_test
+    sgns-blockstore
+    p2p::p2p_cid
+)
+if(WIN32)
+    target_link_libraries(s3_admin_client_test ws2_32)
+endif()
+set_tests_properties(s3_admin_client_test PROPERTIES LABELS "Tier1")
+
 # BACK-07 hermetic store tier (Phase 4, 04-01): S3BlockStore - the full
 # conformance kit + key-layout/idempotency probes over the fake. SDK-free
 # like every default-lane suite; src/ privilege reaches the fake.

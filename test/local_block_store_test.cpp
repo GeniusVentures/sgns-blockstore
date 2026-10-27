@@ -649,3 +649,139 @@ std::shared_ptr<sgns::blockstore::BlockStore> MakeFreshLocalStore()
 
 SGNS_BLOCKSTORE_CONFORMANCE_TESTS(LocalBlockStoreConformance,
                                   MakeFreshLocalStore)
+
+//
+// DUR-01 (v1.1 Phase 10 plan 10-01 Task 2): state-filtered enumeration
+// and the batched durable-mark composition surface.
+//
+
+/// @brief Encoded-CID bytes as the ordering key (byte-lexicographic
+///        contract of the enumeration).
+std::vector<uint8_t> Encoded(const Cid& cid)
+{
+    auto encoded =
+        libp2p::multi::ContentIdentifierCodec::encode(cid);
+    return encoded.value();
+}
+
+/**
+ * @given a journal holding records in all three upload states
+ * @when  GetUploadsInState enumerates each state
+ * @then  each call returns EXACTLY that state's CIDs in encoded-byte
+ *        lexicographic order (the frozen ordering contract - the D-03
+ *        snapshot the flush-gated advancement marks against).
+ */
+TEST(LocalBlockStoreJournal, GetUploadsInStateFiltersAndSorts)
+{
+    auto store = MakeStore("test-data/local-blockstore/state-enum-case");
+    ASSERT_NE(store, nullptr);
+
+    std::vector<Cid> pending;
+    std::vector<Cid> accepted;
+    std::vector<Cid> durable;
+    for (int i = 0; i < 6; ++i)
+    {
+        Cid cid = MakeCid("state-enum payload " + std::to_string(i));
+        ASSERT_TRUE(store->Put(cid, SpanOf("bytes " + std::to_string(i))).has_value());
+        switch (i % 3)
+        {
+            case 0:
+                pending.push_back(cid);
+                break;
+            case 1:
+                ASSERT_TRUE(store->MarkUploadedAccepted(cid).has_value());
+                accepted.push_back(cid);
+                break;
+            default:
+                ASSERT_TRUE(store->MarkUploadedAccepted(cid).has_value());
+                ASSERT_TRUE(store->MarkUploadedDurable(cid).has_value());
+                durable.push_back(cid);
+                break;
+        }
+    }
+
+    auto sort_by_encoded = [](std::vector<Cid> cids)
+    {
+        std::sort(cids.begin(), cids.end(), [](const Cid& a, const Cid& b)
+                  { return Encoded(a) < Encoded(b); });
+        return cids;
+    };
+
+    auto in_pending = store->GetUploadsInState(UploadState::PendingUpload);
+    ASSERT_TRUE(in_pending.has_value());
+    auto expected_pending = sort_by_encoded(pending);
+    ASSERT_EQ(in_pending.value().size(), expected_pending.size());
+    EXPECT_EQ(in_pending.value(), expected_pending);
+
+    auto in_accepted = store->GetUploadsInState(UploadState::UploadedAccepted);
+    ASSERT_TRUE(in_accepted.has_value());
+    auto expected_accepted = sort_by_encoded(accepted);
+    ASSERT_EQ(in_accepted.value().size(), expected_accepted.size());
+    EXPECT_EQ(in_accepted.value(), expected_accepted);
+
+    auto in_durable = store->GetUploadsInState(UploadState::UploadedDurable);
+    ASSERT_TRUE(in_durable.has_value());
+    auto expected_durable = sort_by_encoded(durable);
+    ASSERT_EQ(in_durable.value().size(), expected_durable.size());
+    EXPECT_EQ(in_durable.value(), expected_durable);
+}
+
+/**
+ * @given Accepted journal records plus one CID with NO record at all
+ * @when  MarkUploadedDurableMany runs over the mixed span
+ * @then  every existing record is Durable after the ONE call, the
+ *        no-record CID is skipped-and-continued (per-item isolation -
+ *        upload state is never fabricated, the batch never aborts), and
+ *        an empty span is a success no-op. Already-Durable records stay
+ *        Durable (idempotent replay is a no-op advancement).
+ */
+TEST(LocalBlockStoreJournal, MarkUploadedDurableManySkipsAndContinues)
+{
+    auto store = MakeStore("test-data/local-blockstore/batch-mark-case");
+    ASSERT_NE(store, nullptr);
+
+    std::vector<Cid> accepted;
+    for (int i = 0; i < 4; ++i)
+    {
+        Cid cid = MakeCid("batch-mark payload " + std::to_string(i));
+        ASSERT_TRUE(store->Put(cid, SpanOf("bytes " + std::to_string(i))).has_value());
+        ASSERT_TRUE(store->MarkUploadedAccepted(cid).has_value());
+        accepted.push_back(cid);
+    }
+    const Cid no_record = MakeCid("never journaled payload");
+
+    // Empty span: success no-op.
+    ASSERT_TRUE(store
+                    ->MarkUploadedDurableMany(
+                        gsl::span<const Cid>{})
+                    .has_value());
+
+    // Mixed span: existing records marked, no-record CID skipped.
+    std::vector<Cid> mixed = accepted;
+    mixed.insert(mixed.begin() + 2, no_record);
+    ASSERT_TRUE(store
+                    ->MarkUploadedDurableMany(
+                        gsl::span<const Cid>(mixed.data(), mixed.size()))
+                    .has_value());
+
+    for (const auto& cid : accepted)
+    {
+        auto state = store->GetUploadState(cid);
+        ASSERT_TRUE(state.has_value());
+        EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+    }
+    auto no_record_state = store->GetUploadState(no_record);
+    ASSERT_FALSE(no_record_state.has_value()); // still no record - not fabricated
+
+    // Idempotent replay over Durable records stays Durable.
+    ASSERT_TRUE(store
+                    ->MarkUploadedDurableMany(
+                        gsl::span<const Cid>(accepted.data(), accepted.size()))
+                    .has_value());
+    for (const auto& cid : accepted)
+    {
+        auto state = store->GetUploadState(cid);
+        ASSERT_TRUE(state.has_value());
+        EXPECT_EQ(state.value(), UploadState::UploadedDurable);
+    }
+}
