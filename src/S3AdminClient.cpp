@@ -240,8 +240,33 @@ namespace sgns::blockstore
             int          port;
             if ( colon != std::string::npos )
             {
-                host = url.substr( 0, colon );
-                port = std::stoi( url.substr( colon + 1 ) );
+                host                 = url.substr( 0, colon );
+                const auto port_text = url.substr( colon + 1 );
+                // Manual digits-only range-checked parse (review MA-01):
+                // std::stoi throws out_of_range on huge ports (escaping
+                // the outcome contract through the embedder) and silently
+                // accepts trailing junk / negatives - none of that here.
+                uint32_t parsed = 0;
+                bool     ok     = !port_text.empty();
+                for ( const char c : port_text )
+                {
+                    if ( c < '0' || c > '9' )
+                    {
+                        ok = false;
+                        break;
+                    }
+                    parsed = parsed * 10 + static_cast<uint32_t>( c - '0' );
+                    if ( parsed > 65535 )
+                    {
+                        ok = false;
+                        break;
+                    }
+                }
+                if ( !ok )
+                {
+                    return false;
+                }
+                port = static_cast<int>( parsed );
             }
             else
             {

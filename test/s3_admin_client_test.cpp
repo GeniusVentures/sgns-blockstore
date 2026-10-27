@@ -88,6 +88,13 @@ namespace
     std::shared_ptr<S3AdminClient> MakeClient( uint16_t port )
     {
         auto opened = sgns::blockstore::OpenS3dAdminClient( MakeConfig( port ) );
+        // Result-guard discipline (policy::terminate): a construction
+        // failure must fail the TEST, not kill the binary (review MI-03).
+        if ( !opened.has_value() )
+        {
+            ADD_FAILURE() << "OpenS3dAdminClient failed: " << opened.error().message;
+            return nullptr;
+        }
         return std::shared_ptr<S3AdminClient>( std::move( opened.value() ) );
     }
 
@@ -208,6 +215,7 @@ TEST( S3AdminClientWire, FlushCarriesEmptyUsernameBasicAuth )
     stub.EnqueueOk200();
 
     auto client = MakeClient( stub.Port() );
+    ASSERT_NE( client, nullptr );
     auto flushed = client->Flush( std::chrono::milliseconds( 1000 ) );
     ASSERT_TRUE( flushed.has_value() );
 
@@ -317,11 +325,13 @@ TEST( S3AdminClientWire, StatsMissingPendingObjectsMapsTemporarilyUnavailable )
  */
 TEST( S3AdminClientWire, FlushReadBudgetBoundsABlockedResponse )
 {
+#ifdef _WIN32
     BlackholeListener blackhole;
     ASSERT_TRUE( blackhole.Start() );
 
-    auto config   = MakeConfig( blackhole.Port() );
-    auto opened   = sgns::blockstore::OpenS3dAdminClient( config );
+    auto config = MakeConfig( blackhole.Port() );
+    auto opened = sgns::blockstore::OpenS3dAdminClient( config );
+    ASSERT_TRUE( opened.has_value() ) << "construction against the black hole must succeed (no I/O)";
     auto client   = std::shared_ptr<S3AdminClient>( std::move( opened.value() ) );
     const auto t0 = std::chrono::steady_clock::now();
     auto flushed  = client->Flush( std::chrono::milliseconds( 200 ) );
@@ -331,4 +341,7 @@ TEST( S3AdminClientWire, FlushReadBudgetBoundsABlockedResponse )
     ASSERT_FALSE( flushed.has_value() );
     EXPECT_EQ( flushed.error().code, StatusClass::TemporarilyUnavailable );
     EXPECT_LT( elapsed.count(), 5000 ) << "Flush must be bounded by its read budget";
+#else
+    GTEST_SKIP() << "black-hole listener is WinSock-only (review MI-04)";
+#endif
 }
