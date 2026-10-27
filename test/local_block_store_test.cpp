@@ -787,3 +787,44 @@ TEST(LocalBlockStoreJournal, MarkUploadedDurableManySkipsAndContinues)
         EXPECT_EQ(state.value(), UploadState::UploadedDurable);
     }
 }
+
+/**
+ * @given a payload and its CIDv0 dag-pb/sha-256 claim (the shape every
+ *        CRDT delta node carries - IPLDNodeImpl blocks are V0 by
+ *        construction) while CidOf recomputes the CIDv1 form
+ * @when  Put and verified Get run against the V0 claim
+ * @then  both ACCEPT: CIDv0 and CIDv1 with the same codec, hash type,
+ *        and multihash are the same content address (the IPLD spec
+ *        equivalence, surfaced by Phase 11's tracer - a strict
+ *        operator== rejected every real delta block at the decorator
+ *        seam); wrong bytes under a V0 claim still fail Corrupt.
+ */
+TEST(LocalBlockStoreJournal, CidV0DagPbClaimAcceptedAndStillVerifies)
+{
+    auto store = MakeStore("test-data/local-blockstore/v0-equivalence-case");
+    ASSERT_NE(store, nullptr);
+
+    const std::string payload = "cidv0 dag-pb equivalence payload";
+    auto computed = CidOf(SpanOf(payload), MulticodecType::Code::DAG_PB);
+    ASSERT_TRUE(computed.has_value());
+    const Cid claimed_v0(Cid::Version::V0, MulticodecType::Code::DAG_PB,
+                         computed.value().content_address);
+
+    // The equivalence claim: V0 in, bytes hashed to the V1 twin.
+    auto put = store->Put(claimed_v0, SpanOf(payload));
+    ASSERT_TRUE(put.has_value()) << "the V0 dag-pb claim must be accepted";
+
+    // Verified read-back through the same equivalence.
+    sgns::blockstore::ReadOptions verify_read;
+    verify_read.verify = true;
+    auto got = store->Get(claimed_v0, verify_read);
+    ASSERT_TRUE(got.has_value());
+    EXPECT_EQ(got.value().bytes,
+              std::vector<uint8_t>(payload.begin(), payload.end()));
+
+    // The security property is intact: wrong bytes under the V0 claim
+    // still fail Corrupt (the digest mismatch stands).
+    auto bad = store->Put(claimed_v0, SpanOf("cidv0 wrong payload"));
+    ASSERT_FALSE(bad.has_value());
+    EXPECT_EQ(bad.error().code, StatusClass::Corrupt);
+}

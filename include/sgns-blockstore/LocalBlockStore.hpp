@@ -31,6 +31,11 @@ namespace sgns::blockstore
     /// families.
     static constexpr const char* kUploadJournalColumnFamilyName = "upload_journal";
 
+    /// Column-family name holding the spill timestamps ("spill_times",
+    /// v1.1 Phase 11 D-01). Published so audit tooling and tests can
+    /// address the store's column families.
+    static constexpr const char* kSpillTimesColumnFamilyName = "spill_times";
+
     /**
      * @brief The lifecycle state of a block's remote-upload journal record.
      *
@@ -44,6 +49,22 @@ namespace sgns::blockstore
         PendingUpload,    ///< committed locally, remote upload not yet acknowledged
         UploadedAccepted, ///< object store acknowledged receipt (durability unproven)
         UploadedDurable,  ///< object store proved durable storage
+    };
+
+    /**
+     * @brief One Durable journal record paired with its spill-timestamp
+     *        age evidence (D-01, v1.1 Phase 11).
+     *
+     * spilled_at_unix_ms == 0 means NO spill_times entry exists for the
+     * record (a pre-Phase-11 store, or a record whose side-CF write was
+     * never born): the caller backfills via SetSpilledAt and treats the
+     * record as young for one full retention period (the under-eviction
+     * direction).
+     */
+    struct SpillEntry
+    {
+        Cid     cid;                   ///< the Durable journal record's CID
+        uint64_t spilled_at_unix_ms{0}; ///< wall-clock unix-ms spill time (0 = absent)
     };
 
     /**
@@ -264,6 +285,49 @@ namespace sgns::blockstore
          *         or the mapped RocksDB scan failure
          */
         result<std::vector<Cid>, BlockStatus> GetUploadsInState(UploadState state);
+
+        /**
+         * @brief Read the CID's spill timestamp (D-01 age evidence, v1.1
+         *        Phase 11).
+         * @param cid the block whose spill time to read
+         * @return the uint64 unix-ms timestamp, or a NotFound+Local
+         *         failure when no spill_times entry exists (never a
+         *         fabricated 0); IO/lock failures map to
+         *         TemporarilyUnavailable via MapStatus (the
+         *         absent-vs-unreadable distinction MI-02 depends on)
+         */
+        result<uint64_t, BlockStatus> GetSpilledAt(const Cid& cid);
+
+        /**
+         * @brief Write or overwrite the CID's spill timestamp (D-01).
+         *
+         * The backfill surface for pre-Phase-11 records (spilled_at == 0
+         * from GetDurableWithSpillTime) and the TEST seam for age-gate
+         * fixtures. ONE sync journal write - never called on the Put path
+         * (birth timestamps ride Put's own atomic batch).
+         * @param cid the block whose spill time to write
+         * @param unix_ms the wall-clock unix-ms timestamp
+         * @return success, or the mapped RocksDB failure
+         */
+        result<void, BlockStatus> SetSpilledAt(const Cid& cid, uint64_t unix_ms);
+
+        /**
+         * @brief Enumerate the UploadedDurable journal records WITH their
+         *        spill timestamps (GC-01, the retention candidate source).
+         *
+         * ONE scan of the journal column family filtering UploadedDurable
+         * with point reads in spill_times - the journal is the truth
+         * (MI-01: never the advisory status counters). Entries come back
+         * in the journal CF's encoded-byte lexicographic order over the
+         * CID keys (the frozen ordering contract, deterministic and
+         * restart-stable); a missing side-CF entry yields
+         * spilled_at_unix_ms == 0 (absent, never fabricated). Undecodable
+         * journal records are skipped - an audit surface, never a scan
+         * crash.
+         * @return the Durable SpillEntry set in encoded-byte order, or
+         *         the mapped RocksDB scan failure
+         */
+        result<std::vector<SpillEntry>, BlockStatus> GetDurableWithSpillTime();
 
         /**
          * @brief Remove this store's LOCAL copy of a block, unconditionally

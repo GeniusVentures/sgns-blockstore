@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include <chrono>
+
 #include <libp2p/multi/content_identifier_codec.hpp>
 #include <libp2p/multi/multihash.hpp>
 
@@ -24,6 +26,27 @@
 
 namespace sgns::blockstore
 {
+    bool EquivalentCidClaim(const Cid& computed, const Cid& claimed)
+    {
+        if (claimed.content_address.getType()
+            != computed.content_address.getType())
+        {
+            return false;
+        }
+        if (!(claimed.content_address == computed.content_address))
+        {
+            return false; // digest mismatch: NOT equivalent - Corrupt stands
+        }
+        if (claimed.content_type != computed.content_type)
+        {
+            return false;
+        }
+        // Identical multihash + codec + hash type: the only remaining
+        // difference is the version encoding (V0 <-> V1), which the IPLD
+        // spec defines as the same address.
+        return true;
+    }
+
     namespace
     {
         /**
@@ -145,6 +168,47 @@ namespace sgns::blockstore
         };
 
         /**
+         * @brief Spill-timestamp codec: value schema is EXACTLY 8 bytes
+         *        of little-endian uint64 unix-ms (D-01, v1.1 Phase 11).
+         *
+         * The journal record itself carries NO timestamp (2 bytes only),
+         * so the side column family is the sole age-evidence store. ANY
+         * value that is not exactly 8 bytes decodes to nullopt - the
+         * caller treats it as absent (spilled_at 0: backfill-and-wait,
+         * the under-eviction direction), never as a fabricated time.
+         */
+        struct SpillTimeRecord
+        {
+            static constexpr size_t kEncodedSize = 8;
+
+            static std::string Encode(uint64_t unix_ms)
+            {
+                std::string encoded(kEncodedSize, '\0');
+                for (size_t i = 0; i < kEncodedSize; ++i)
+                {
+                    encoded[i] = static_cast<char>((unix_ms >> (8 * i)) & 0xFF);
+                }
+                return encoded;
+            }
+
+            static std::optional<uint64_t> Decode(const rocksdb::Slice& value)
+            {
+                if (value.size() != kEncodedSize)
+                {
+                    return std::nullopt;
+                }
+                uint64_t unix_ms = 0;
+                for (size_t i = 0; i < kEncodedSize; ++i)
+                {
+                    unix_ms |= static_cast<uint64_t>(
+                                   static_cast<uint8_t>(value[i]))
+                               << (8 * i);
+                }
+                return unix_ms;
+            }
+        };
+
+        /**
          * @brief RocksDB Status -> BlockStatus, switched on named Status
          *        codes ONLY (never ToString matching, never enumerating -
          *        enum values are append-only across RocksDB versions).
@@ -181,6 +245,15 @@ namespace sgns::blockstore
         {
             return rocksdb::Slice(key.data(), key.size());
         }
+
+        /// Wall-clock unix-ms (the D-01 spill-timestamp clock).
+        uint64_t UnixNowMs()
+        {
+            return static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch() )
+                    .count() );
+        }
     }
 
     //
@@ -200,6 +273,8 @@ namespace sgns::blockstore
         rocksdb::DB* db_ = nullptr;
         rocksdb::ColumnFamilyHandle* blocks_ = nullptr;
         rocksdb::ColumnFamilyHandle* journal_ = nullptr;
+        /// v1.1 Phase 11 (D-01): the spill-timestamp side column family.
+        rocksdb::ColumnFamilyHandle* spill_times_ = nullptr;
         rocksdb::WriteOptions wo_;
         rocksdb::ReadOptions ro_;
     };
@@ -252,6 +327,11 @@ namespace sgns::blockstore
             rocksdb::ColumnFamilyDescriptor{},
             {kBlocksColumnFamilyName, rocksdb::ColumnFamilyOptions()},
             {kUploadJournalColumnFamilyName, rocksdb::ColumnFamilyOptions()},
+            // v1.1 Phase 11 (D-01): the spill-timestamp side CF.
+            // create_missing_column_families is already true, so listing
+            // the descriptor here EXTENDS a pre-Phase-11 store in place
+            // (A1) - no migration, no separate Open pass.
+            {kSpillTimesColumnFamilyName, rocksdb::ColumnFamilyOptions()},
         };
 
         std::vector<rocksdb::ColumnFamilyHandle*> handles;
@@ -269,6 +349,7 @@ namespace sgns::blockstore
         store->impl_->db_ = db;
         store->impl_->blocks_ = handles[1];
         store->impl_->journal_ = handles[2];
+        store->impl_->spill_times_ = handles[3];
         return store;
     }
 
@@ -281,8 +362,10 @@ namespace sgns::blockstore
         // NEVER the DefaultColumnFamily() handle (Pitfall 7).
         impl_->db_->DestroyColumnFamilyHandle(impl_->blocks_);
         impl_->db_->DestroyColumnFamilyHandle(impl_->journal_);
+        impl_->db_->DestroyColumnFamilyHandle(impl_->spill_times_);
         impl_->blocks_ = nullptr;
         impl_->journal_ = nullptr;
+        impl_->spill_times_ = nullptr;
         // Close does not fsync the WAL files - by design: the WAL is
         // exactly what reopen replays.
         const auto status = impl_->db_->Close();
@@ -316,7 +399,7 @@ namespace sgns::blockstore
             return BlockStatus{StatusClass::Corrupt, BlockSource::Caller,
                                "Put rejected: payload could not be hashed"};
         }
-        if (!(computed.value() == cid))
+        if (!(computed.value() == cid) && !EquivalentCidClaim(computed.value(), cid))
         {
             return BlockStatus{StatusClass::Corrupt, BlockSource::Caller,
                                "Put rejected: bytes do not hash to the claimed CID"};
@@ -363,6 +446,12 @@ namespace sgns::blockstore
         {
             batch.Put(impl_->journal_, KeySlice(key.value()),
                       JournalRecord::Encode(UploadState::PendingUpload));
+            // v1.1 Phase 11 (D-01): the spill timestamp rides the SAME
+            // birth batch - atomic with the journal record, no second
+            // Write, no timestamp churn on re-Put. The value is 8-byte
+            // little-endian unix-ms.
+            batch.Put(impl_->spill_times_, KeySlice(key.value()),
+                      SpillTimeRecord::Encode(UnixNowMs()));
         }
         const auto committed = impl_->db_->Write(impl_->wo_, &batch);
         if (!committed.ok())
@@ -432,7 +521,8 @@ namespace sgns::blockstore
         }
         if (options.verify)
         {
-            // Phase-6 (D-04): branch on the CID's own multihash (see Put).
+            // Phase-6 (D-04): branch on the CID's own multihash (see Put);
+            // the V0<->V1 dag-pb equivalence applies identically here.
             auto computed =
                 CidOf(bytes, cid.content_type, cid.content_address.getType());
             if (!computed)
@@ -440,7 +530,7 @@ namespace sgns::blockstore
                 return BlockStatus{StatusClass::Corrupt, BlockSource::Local,
                                    "Get rejected: stored bytes could not be hashed"};
             }
-            if (!(computed.value() == cid))
+            if (!(computed.value() == cid) && !EquivalentCidClaim(computed.value(), cid))
             {
                 if (fault_ == FaultKind::CorruptData)
                 {
@@ -598,6 +688,132 @@ namespace sgns::blockstore
         // One scan body exists: the pending set is the state-filtered
         // enumeration generalized (DUR-01, Phase 10).
         return GetUploadsInState(UploadState::PendingUpload);
+    }
+
+    result<uint64_t, BlockStatus> LocalBlockStore::GetSpilledAt(const Cid& cid)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        std::string value;
+        const auto status = impl_->db_->Get(
+            impl_->ro_, impl_->spill_times_, KeySlice(key.value()), &value);
+        // Absent vs unreadable are DISTINCT outcomes (MI-02's evidence
+        // rule depends on it): only IsNotFound maps to NotFound; IO/lock
+        // failures map to TemporarilyUnavailable and never masquerade as
+        // absence.
+        if (status.IsNotFound())
+        {
+            return BlockStatus{StatusClass::NotFound, BlockSource::Local,
+                               "no spill timestamp for the CID"};
+        }
+        if (!status.ok())
+        {
+            return MapStatus(status, "GetSpilledAt: read failed");
+        }
+        auto decoded = SpillTimeRecord::Decode(rocksdb::Slice(value));
+        if (!decoded)
+        {
+            // Undecodable side-CF value: conservative direction is absent
+            // (backfill-and-wait), surfaced as Corrupt so the caller can
+            // distinguish it from a clean miss.
+            return BlockStatus{StatusClass::Corrupt, BlockSource::Local,
+                               "spill timestamp record is not 8 bytes"};
+        }
+        return decoded.value();
+    }
+
+    result<void, BlockStatus> LocalBlockStore::SetSpilledAt(const Cid& cid,
+                                                            uint64_t unix_ms)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        // ONE atomic sync write (the TransitionJournal shape) - the
+        // backfill surface for pre-Phase-11 records and the test seam for
+        // age-gate fixtures; never on the Put path.
+        rocksdb::WriteBatch batch;
+        batch.Put(impl_->spill_times_, KeySlice(key.value()),
+                  SpillTimeRecord::Encode(unix_ms));
+        const auto committed = impl_->db_->Write(impl_->wo_, &batch);
+        if (!committed.ok())
+        {
+            return MapStatus(committed, "SetSpilledAt: commit failed");
+        }
+        return outcome::success();
+    }
+
+    result<std::vector<SpillEntry>, BlockStatus>
+    LocalBlockStore::GetDurableWithSpillTime()
+    {
+        // ONE scan of the journal CF filtering UploadedDurable, with point
+        // reads in spill_times (the GetUploadsInState iterator discipline:
+        // snapshot-consistent iterator, undecodable-record skip, iterator
+        // status check after the loop). Ordering is the journal CF's
+        // encoded-byte lexicographic order over the CID keys - the frozen
+        // ordering contract, deterministic and restart-stable.
+        std::vector<SpillEntry> durable;
+        std::unique_ptr<rocksdb::Iterator> it(
+            impl_->db_->NewIterator(impl_->ro_, impl_->journal_));
+        for (it->SeekToFirst(); it->Valid(); it->Next())
+        {
+            const auto record = JournalRecord::Decode(it->value());
+            if (!record || *record != UploadState::UploadedDurable)
+            {
+                continue;
+            }
+            auto cid = libp2p::multi::ContentIdentifierCodec::decode(
+                gsl::span<const uint8_t>(
+                    reinterpret_cast<const uint8_t*>(it->key().data()),
+                    it->key().size()));
+            if (!cid)
+            {
+                continue; // undecodable key: skipped - audit surface, never a scan crash
+            }
+            // Point read: a missing side-CF entry yields spilled_at 0
+            // (absent, never fabricated, never a scan abort).
+            uint64_t spilled_at = 0;
+            std::string stamp;
+            const auto stamp_status = impl_->db_->Get(
+                impl_->ro_, impl_->spill_times_, it->key(), &stamp);
+            if (stamp_status.ok())
+            {
+                auto decoded = SpillTimeRecord::Decode(rocksdb::Slice(stamp));
+                if (decoded)
+                {
+                    spilled_at = decoded.value();
+                }
+            }
+            else if (!stamp_status.IsNotFound())
+            {
+                // A read failure poisons the whole enumeration's evidence:
+                // surface it so the caller aborts the pass (MI-02 - an
+                // unreadable read is never eligibility evidence).
+                return MapStatus(stamp_status,
+                                 "GetDurableWithSpillTime: spill-time read failed");
+            }
+            durable.push_back(SpillEntry{std::move(cid.value()), spilled_at});
+        }
+        if (!it->status().ok())
+        {
+            return MapStatus(it->status(),
+                             "GetDurableWithSpillTime: journal scan failed");
+        }
+        return durable;
     }
 
     result<void, BlockStatus> LocalBlockStore::ForEach(

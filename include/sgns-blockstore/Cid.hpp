@@ -93,6 +93,27 @@ namespace sgns::blockstore
     outcome::result<Cid> CidOf(gsl::span<const uint8_t> bytes,
                                libp2p::multi::MulticodecType::Code codec,
                                libp2p::multi::HashType hash);
+
+    /**
+     * @brief Verify-at-facade equivalence predicate: is the COMPUTED CID
+     *        (always the CidOf CIDv1 form) the same content address as
+     *        the CLAIMED CID? (Surfaced by Phase 11's tracer.)
+     *
+     * CIDv0 is BY DEFINITION dag-pb + sha2-256; a CIDv1 carrying the
+     * same codec, the same hash type, and an identical multihash is the
+     * SAME content address in canonical form. CidOf always constructs
+     * the CIDv1 form, while every CRDT delta node (IPLDNodeImpl) carries
+     * the CIDv0 form (Qm...), so a strict operator== would reject every
+     * real delta block at Put - though the digest itself matches. This
+     * predicate keeps the security property intact: the multihash, the
+     * hash type, and the codec must ALL be equal; ONLY the version
+     * encoding may differ.
+     *
+     * @param computed the CidOf output (CIDv1 form)
+     * @param claimed the caller-supplied CID claim (any version)
+     * @return true when the two denote the same content address
+     */
+    bool EquivalentCidClaim(const Cid& computed, const Cid& claimed);
 }
 
 #endif  // SGNS_BLOCKSTORE_CID_HPP

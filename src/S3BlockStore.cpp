@@ -139,7 +139,7 @@ namespace sgns::blockstore
             return BlockStatus{StatusClass::Corrupt, BlockSource::Caller,
                                "Put rejected: payload could not be hashed"};
         }
-        if (!(computed.value() == cid))
+        if (!(computed.value() == cid) && !EquivalentCidClaim(computed.value(), cid))
         {
             return BlockStatus{StatusClass::Corrupt, BlockSource::Caller,
                                "Put rejected: bytes do not hash to the "
@@ -196,7 +196,7 @@ namespace sgns::blockstore
                                    "Get rejected: fetched bytes could not "
                                    "be hashed"};
             }
-            if (!(computed.value() == cid))
+            if (!(computed.value() == cid) && !EquivalentCidClaim(computed.value(), cid))
             {
                 return BlockStatus{StatusClass::Corrupt,
                                    BlockSource::Remote,
