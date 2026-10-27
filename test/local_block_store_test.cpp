@@ -1022,6 +1022,65 @@ TEST(LocalBlockStoreJournal, EvictLocalAndMarkDisposedSingleBatchAndIdempotent)
 }
 
 /**
+ * @given a Durable journaled block and the Unavailable fault armed at the
+ *        entry gate (the pre-Write abort seam - the batch itself is ONE
+ *        Write with no mid-commit window)
+ * @when  EvictLocalAndMarkDisposed runs under the fault, then again
+ *        after the fault clears
+ * @then  the faulted call is all-NOTHING (bytes, journal, timestamp all
+ * intact, no marker), and the cleared call is all-PRESENT - the primitive
+ * never lands a partial unit.
+ */
+TEST(LocalBlockStoreJournal, EvictLocalAndMarkDisposedAllOrNothingUnderFault)
+{
+    auto store = MakeStore("test-data/local-blockstore/disposed-fault-case");
+    ASSERT_NE(store, nullptr);
+
+    const std::string payload = "disposed fault payload";
+    const Cid cid = MakeCid(payload);
+    ASSERT_TRUE(store->Put(cid, SpanOf(payload)).has_value());
+    ASSERT_TRUE(store->MarkUploadedDurable(cid).has_value());
+
+    sgns::blockstore::DisposedRecord record;
+    record.disposed_at_unix_ms = 1700000000000ull;
+    record.reclaimed_bytes     = 7;
+    record.original_size       = 7;
+
+    // All-NOTHING: the gate rejects before any Write (fault cleared
+    // BEFORE the verification reads - they pass the same gate).
+    store->SetFault(FaultKind::Unavailable);
+    auto faulted = store->EvictLocalAndMarkDisposed(cid, record);
+    ASSERT_FALSE(faulted.has_value());
+    store->SetFault(FaultKind::None);
+    {
+        auto has = store->Has(cid);
+        ASSERT_TRUE(has.has_value());
+        EXPECT_TRUE(has.value());
+        auto state = store->GetUploadState(cid);
+        ASSERT_TRUE(state.has_value());
+        auto stamp = store->GetSpilledAt(cid);
+        ASSERT_TRUE(stamp.has_value());
+        auto disposed = store->IsDisposed(cid);
+        ASSERT_TRUE(disposed.has_value());
+        EXPECT_FALSE(disposed.value());
+    }
+
+    // All-PRESENT: the cleared call lands the whole unit.
+    store->SetFault(FaultKind::None);
+    ASSERT_TRUE(store->EvictLocalAndMarkDisposed(cid, record).has_value());
+    {
+        auto has = store->Has(cid);
+        ASSERT_TRUE(has.has_value());
+        EXPECT_FALSE(has.value());
+        auto state = store->GetUploadState(cid);
+        EXPECT_FALSE(state.has_value());
+        auto disposed = store->IsDisposed(cid);
+        ASSERT_TRUE(disposed.has_value());
+        EXPECT_TRUE(disposed.value());
+    }
+}
+
+/**
  * @given journaled blocks with two already-disposed markers
  * @when  TrimDisposed runs with a count cap below the marker count, then
  *        with a max age that excludes only the older marker
