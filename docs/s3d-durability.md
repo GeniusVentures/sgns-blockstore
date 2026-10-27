@@ -88,11 +88,27 @@ spike object:
 - after flush: `pendingObjects: 0, uploadedObjects: 1,
   uploadedSize: 38, bufferUsed: 0` (`stats-after-flush.txt`)
 
-The flush is **bucket/global-scoped, not per-object**, and it is the
-only documented primitive that moves pending objects to uploaded+pinned
-state on demand. Future durability polling (fast-follow work) can
-compose a flush + counter observation, but a per-object durability
-answer would require a future s3d signal; none exists at this tag.
+The flush is **process-global, not per-object and not per-bucket**: the
+pinned tag's openapi declares no bucket parameter on `/objects/flush`
+(*"Uploads all pending objects to Sia immediately, regardless of
+padding, and pins them so their local pending files are removed. Blocks
+until done."*), so the `pendingObjects == 0` evidence a caller composes
+from `GET /stats/uploads` after a flush is PROCESS-WIDE. Shared-s3d
+deployments therefore get slower advancement, never wrong advancement:
+a zero-pending observation proves every staged object of the process
+reached uploaded+pinned state, which is a conservative superset of any
+single writer's own objects. Future durability polling composes exactly
+this flush + counter observation (the `sgns-blockstore::S3AdminClient`
+facade, v1.1 Phase 10); a per-object durability answer would require a
+future s3d signal; none exists at this tag.
+
+**Admin authentication (§1.1):** the admin API is served by a SEPARATE
+always-enabled listener (default `127.0.0.1:8001`) authenticated with
+HTTP Basic using a configured ADMIN password - the username is ignored
+(the wire form is `base64(":" + adminPassword)` with an empty username)
+and these are NOT the S3 SigV4 credentials used against the S3 API
+port. Deployments exposing the admin listener beyond loopback must
+firewall it accordingly - the default topology is loopback-only.
 
 ## 4. Staged reads: success from local staging, no distinguishing header
 

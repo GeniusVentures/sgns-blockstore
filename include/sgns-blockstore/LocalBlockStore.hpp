@@ -216,6 +216,27 @@ namespace sgns::blockstore
         result<void, BlockStatus> MarkUploadedDurable(const Cid& cid);
 
         /**
+         * @brief Record confirmed remote durability for a BATCH of CIDs
+         *        in ONE atomic journal update (DUR-01, Phase 10).
+         *
+         * Per-item read-gate loop first (record existence; skip-and-
+         * continue on a no-record CID - per-item no-fabrication
+         * isolation, the batch never aborts on a missing record), then
+         * ONE rocksdb::WriteBatch with a Put per VERIFIED key committed
+         * by ONE sync Write: a single fsync and an all-or-nothing crash
+         * window over the verified set (tighter than N single-CID
+         * transitions - the flush-gated advancement marks exactly its
+         * pre-flush snapshot this way).
+         *
+         * @param cids the blocks whose remote storage proved durable
+         * @return success once the verified subset (possibly empty - an
+         *         empty span is a success no-op) is durably marked;
+         *         already-Durable records stay Durable
+         */
+        result<void, BlockStatus> MarkUploadedDurableMany(
+            gsl::span<const Cid> const& cids);
+
+        /**
          * @brief Read the CID's journal-record state (D-06 accessor).
          * @param cid the block whose journal state to read
          * @return the UploadState, or a NotFound+Local failure when the

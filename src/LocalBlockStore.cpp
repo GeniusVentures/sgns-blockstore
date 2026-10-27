@@ -666,6 +666,63 @@ namespace sgns::blockstore
         return TransitionJournal(cid, UploadState::UploadedDurable);
     }
 
+    result<void, BlockStatus> LocalBlockStore::MarkUploadedDurableMany(
+        gsl::span<const Cid> const& cids)
+    {
+        // Throw-at-entry validation for the WHOLE batch (the Phase-6
+        // discipline: an out-of-set hash is a programmer error).
+        for (const auto& cid : cids)
+        {
+            ValidateCidHash(cid);
+        }
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        // Per-item read-gate (RESEARCH 3.2/A6): transitions move
+        // Put-born records only - a no-record CID is SKIPPED-AND-
+        // CONTINUED (per-item no-fabrication isolation; the batch never
+        // aborts on a missing record).
+        rocksdb::WriteBatch batch;
+        size_t verified = 0;
+        for (const auto& cid : cids)
+        {
+            auto key = MakeKey(cid);
+            if (!key)
+            {
+                continue; // defensive: practically unreachable post-validation
+            }
+            std::string record;
+            const auto present = impl_->db_->Get(
+                impl_->ro_, impl_->journal_, KeySlice(key.value()), &record);
+            if (present.IsNotFound())
+            {
+                continue; // no journal record: never fabricated
+            }
+            if (!present.ok())
+            {
+                return MapStatus(present,
+                                 "batched durable mark: record read failed");
+            }
+            batch.Put(impl_->journal_, KeySlice(key.value()),
+                      JournalRecord::Encode(UploadState::UploadedDurable));
+            ++verified;
+        }
+        // ONE WriteBatch + ONE sync Write over the verified set: a
+        // single fsync and an all-or-nothing crash window (an empty
+        // verified set is a success no-op - nothing to commit).
+        if (verified > 0)
+        {
+            const auto committed = impl_->db_->Write(impl_->wo_, &batch);
+            if (!committed.ok())
+            {
+                return MapStatus(committed,
+                                 "batched durable mark: commit failed");
+            }
+        }
+        return outcome::success();
+    }
+
     result<void, BlockStatus> LocalBlockStore::TransitionJournal(
         const Cid& cid, UploadState new_state)
     {

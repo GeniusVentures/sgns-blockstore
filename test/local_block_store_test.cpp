@@ -681,8 +681,9 @@ TEST(LocalBlockStoreJournal, GetUploadsInStateFiltersAndSorts)
     std::vector<Cid> durable;
     for (int i = 0; i < 6; ++i)
     {
-        Cid cid = MakeCid("state-enum payload " + std::to_string(i));
-        ASSERT_TRUE(store->Put(cid, SpanOf("bytes " + std::to_string(i))).has_value());
+        const auto payload = "state-enum payload " + std::to_string(i);
+        Cid cid = MakeCid(payload);
+        ASSERT_TRUE(store->Put(cid, SpanOf(payload)).has_value());
         switch (i % 3)
         {
             case 0:
@@ -743,8 +744,9 @@ TEST(LocalBlockStoreJournal, MarkUploadedDurableManySkipsAndContinues)
     std::vector<Cid> accepted;
     for (int i = 0; i < 4; ++i)
     {
-        Cid cid = MakeCid("batch-mark payload " + std::to_string(i));
-        ASSERT_TRUE(store->Put(cid, SpanOf("bytes " + std::to_string(i))).has_value());
+        const auto payload = "batch-mark payload " + std::to_string(i);
+        Cid cid = MakeCid(payload);
+        ASSERT_TRUE(store->Put(cid, SpanOf(payload)).has_value());
         ASSERT_TRUE(store->MarkUploadedAccepted(cid).has_value());
         accepted.push_back(cid);
     }

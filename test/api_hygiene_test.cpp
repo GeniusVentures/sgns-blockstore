@@ -55,6 +55,7 @@
 #include <sgns-blockstore/BlockStoreTooling.hpp>
 #include <sgns-blockstore/FaultController.hpp>
 #include <sgns-blockstore/S3Client.hpp>
+#include <sgns-blockstore/S3AdminClient.hpp>
 #include <sgns-blockstore/MemoryBlockStore.hpp>
 #include <sgns-blockstore/LocalBlockStore.hpp>
 #include <sgns-blockstore/S3BlockStore.hpp>
