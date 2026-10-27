@@ -957,3 +957,121 @@ TEST(LocalBlockStoreJournal, OldStoreReopenCreatesSpillTimesAndBackfills)
     ASSERT_EQ(durable_now.value().size(), 1u);
     EXPECT_EQ(durable_now.value()[0].spilled_at_unix_ms, kBackfillStamp);
 }
+
+/**
+ * @given a Durable journaled block
+ * @when  EvictLocalAndMarkDisposed runs, then runs AGAIN over the same
+ *        CID
+ * @then  ONE batch removed the block bytes, the journal record, AND the
+ *        spill timestamp while writing the disposed marker (IsDisposed
+ *        true, GetUploadState absent, GetSpilledAt absent, GetDisposed
+ *        round-trips all five record fields); the second call succeeds
+ *        idempotently (the post-state already holds - no partial
+ *        re-deletion, marker untouched).
+ */
+TEST(LocalBlockStoreJournal, EvictLocalAndMarkDisposedSingleBatchAndIdempotent)
+{
+    auto store = MakeStore("test-data/local-blockstore/disposed-case");
+    ASSERT_NE(store, nullptr);
+
+    const std::string payload = "disposed marker payload";
+    const Cid cid = MakeCid(payload);
+    ASSERT_TRUE(store->Put(cid, SpanOf(payload)).has_value());
+    ASSERT_TRUE(store->MarkUploadedDurable(cid).has_value());
+
+    sgns::blockstore::DisposedRecord record;
+    record.disposed_at_unix_ms = 1700000000000ull;
+    record.reclaimed_bytes     = 42;
+    record.original_size       = 42;
+    record.reason              = 1;
+    record.was_sealed          = true;
+
+    auto evicted = store->EvictLocalAndMarkDisposed(cid, record);
+    ASSERT_TRUE(evicted.has_value());
+
+    // The one-batch post-state: bytes + journal + timestamp gone, marker present.
+    auto has = store->Has(cid);
+    ASSERT_TRUE(has.has_value());
+    EXPECT_FALSE(has.value());
+    auto state = store->GetUploadState(cid);
+    EXPECT_FALSE(state.has_value());
+    auto stamp = store->GetSpilledAt(cid);
+    EXPECT_FALSE(stamp.has_value());
+    auto disposed = store->IsDisposed(cid);
+    ASSERT_TRUE(disposed.has_value());
+    EXPECT_TRUE(disposed.value());
+
+    auto markers = store->GetDisposed();
+    ASSERT_TRUE(markers.has_value());
+    ASSERT_EQ(markers.value().size(), 1u);
+    EXPECT_TRUE(markers.value()[0].first == cid);
+    const auto &read_back = markers.value()[0].second;
+    EXPECT_EQ(read_back.disposed_at_unix_ms, record.disposed_at_unix_ms);
+    EXPECT_EQ(read_back.reclaimed_bytes, record.reclaimed_bytes);
+    EXPECT_EQ(read_back.original_size, record.original_size);
+    EXPECT_EQ(read_back.reason, record.reason);
+    EXPECT_EQ(read_back.was_sealed, record.was_sealed);
+
+    // Idempotent: the post-state already holds, the second call succeeds
+    // and does not duplicate the marker.
+    auto again = store->EvictLocalAndMarkDisposed(cid, record);
+    ASSERT_TRUE(again.has_value());
+    auto markers_after = store->GetDisposed();
+    ASSERT_TRUE(markers_after.has_value());
+    EXPECT_EQ(markers_after.value().size(), 1u);
+}
+
+/**
+ * @given journaled blocks with two already-disposed markers
+ * @when  TrimDisposed runs with a count cap below the marker count, then
+ *        with a max age that excludes only the older marker
+ * @then  the cap path trims OLDEST-FIRST down to the cap, and the age
+ *        path drops only age-expired markers (dual bound, whichever
+ *        trims first; absent markers trim as no-ops).
+ */
+TEST(LocalBlockStoreJournal, TrimDisposedDualBoundOldestFirst)
+{
+    auto store = MakeStore("test-data/local-blockstore/trim-case");
+    ASSERT_NE(store, nullptr);
+
+    const uint64_t now_ms = 1700000000000ull;
+    sgns::blockstore::DisposedRecord record;
+
+    // Three live blocks (kept journaled) + three disposed markers with
+    // distinct disposed_at stamps (oldest first by construction).
+    const std::vector<std::string> payloads = {
+        "trim payload old", "trim payload mid", "trim payload new",
+    };
+    std::vector<Cid> cids;
+    for (const auto &payload : payloads)
+    {
+        cids.push_back(MakeCid(payload));
+        ASSERT_TRUE(store->Put(cids.back(), SpanOf(payload)).has_value());
+        ASSERT_TRUE(store->MarkUploadedDurable(cids.back()).has_value());
+    }
+    record.disposed_at_unix_ms = now_ms - 5000;
+    ASSERT_TRUE(store->EvictLocalAndMarkDisposed(cids[0], record).has_value());
+    record.disposed_at_unix_ms = now_ms - 3000;
+    ASSERT_TRUE(store->EvictLocalAndMarkDisposed(cids[1], record).has_value());
+    record.disposed_at_unix_ms = now_ms - 1000;
+    ASSERT_TRUE(store->EvictLocalAndMarkDisposed(cids[2], record).has_value());
+
+    // Age path: only markers older than (now_ms - 4000) drop -> the
+    // oldest one (cids[0]).
+    ASSERT_TRUE(store->TrimDisposed(100, now_ms - 4000).has_value());
+    {
+        auto markers = store->GetDisposed();
+        ASSERT_TRUE(markers.has_value());
+        ASSERT_EQ(markers.value().size(), 2u);
+        EXPECT_FALSE(markers.value()[0].first == cids[0]);
+    }
+
+    // Cap path: cap 1 trims oldest-first down to the newest marker.
+    ASSERT_TRUE(store->TrimDisposed(1, 0 /* no age bound */).has_value());
+    {
+        auto markers = store->GetDisposed();
+        ASSERT_TRUE(markers.has_value());
+        ASSERT_EQ(markers.value().size(), 1u);
+        EXPECT_TRUE(markers.value()[0].first == cids[2]);
+    }
+}
