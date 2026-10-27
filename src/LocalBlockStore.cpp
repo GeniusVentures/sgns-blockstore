@@ -556,21 +556,23 @@ namespace sgns::blockstore
         return results;
     }
 
-    result<std::vector<Cid>, BlockStatus> LocalBlockStore::GetPendingUploads()
+    result<std::vector<Cid>, BlockStatus> LocalBlockStore::GetUploadsInState(
+        UploadState state)
     {
         // A plain CF iterator over the default BytewiseComparator is
         // snapshot-consistent and yields keys in byte-lexicographic order
         // over the encoded CID bytes - the frozen ordering contract,
         // satisfied naturally. Synchronous scan-on-call (D-05): the
-        // pending set is available immediately after Open - restart
-        // reconciliation needs no callback machinery.
-        std::vector<Cid> pending;
+        // snapshot is available immediately after Open - a restart
+        // re-derives the same set from the journal (the D-03 snapshot
+        // semantics: journal-derived, crash-re-derivable).
+        std::vector<Cid> matching;
         std::unique_ptr<rocksdb::Iterator> it(
             impl_->db_->NewIterator(impl_->ro_, impl_->journal_));
         for (it->SeekToFirst(); it->Valid(); it->Next())
         {
             const auto record = JournalRecord::Decode(it->value());
-            if (!record || *record != UploadState::PendingUpload)
+            if (!record || *record != state)
             {
                 continue;
             }
@@ -580,15 +582,22 @@ namespace sgns::blockstore
                     it->key().size()));
             if (cid)
             {
-                pending.push_back(std::move(cid.value()));
+                matching.push_back(std::move(cid.value()));
             }
             // Undecodable key: skipped - audit surface, never a scan crash.
         }
         if (!it->status().ok())
         {
-            return MapStatus(it->status(), "GetPendingUploads: journal scan failed");
+            return MapStatus(it->status(), "GetUploadsInState: journal scan failed");
         }
-        return pending;
+        return matching;
+    }
+
+    result<std::vector<Cid>, BlockStatus> LocalBlockStore::GetPendingUploads()
+    {
+        // One scan body exists: the pending set is the state-filtered
+        // enumeration generalized (DUR-01, Phase 10).
+        return GetUploadsInState(UploadState::PendingUpload);
     }
 
     result<void, BlockStatus> LocalBlockStore::ForEach(

@@ -226,6 +226,25 @@ namespace sgns::blockstore
         result<UploadState, BlockStatus> GetUploadState(const Cid& cid);
 
         /**
+         * @brief Enumerate the CIDs whose journal record is in the
+         *        requested state (DUR-01, the D-03 snapshot source).
+         *
+         * The flush-gated durability advancement's Accepted snapshot IS
+         * this enumeration: journal-derived (crash-re-derivable by
+         * construction - a restart re-runs it and re-derives the same
+         * set), snapshot-at-call-start semantics over a plain CF
+         * iterator, and byte-lexicographic ordering over the encoded
+         * CID bytes (the frozen ordering contract, satisfied naturally
+         * by the default BytewiseComparator). Undecodable records are
+         * skipped - an audit surface, never a scan crash.
+         *
+         * @param state the upload state to filter by
+         * @return the matching CIDs in encoded-byte lexicographic order,
+         *         or the mapped RocksDB scan failure
+         */
+        result<std::vector<Cid>, BlockStatus> GetUploadsInState(UploadState state);
+
+        /**
          * @brief Remove this store's LOCAL copy of a block, unconditionally
          *        (D-10).
          *

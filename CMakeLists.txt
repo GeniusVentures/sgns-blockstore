@@ -31,6 +31,11 @@ find_package(RocksDB CONFIG REQUIRED)
 find_package(httplib CONFIG REQUIRED)
 find_package(miniocpp CONFIG REQUIRED)
 
+# nlohmann_json backs the s3d admin facade's STRICT /stats/uploads
+# parsing (S3AdminClient.cpp, v1.1 Phase 10) - linked PRIVATE in src/,
+# never referenced by any installed header.
+find_package(nlohmann_json CONFIG REQUIRED)
+
 # ipfs-lite-cpp provides the blake2b-256 implementation (target
 # ipfs-lite-cpp::blake2) - the same object code sgns::common::getCidOf
 # uses to hash every CRDT DAG block. Linking the ecosystem copy (never a

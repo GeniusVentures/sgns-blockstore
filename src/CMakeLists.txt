@@ -1,10 +1,12 @@
 add_library(sgns-blockstore STATIC
     Cid.cpp
     ContractHeaders.cpp
+    InMemoryS3AdminClient.cpp
     InMemoryS3Client.cpp
     LocalBlockStore.cpp
     MemoryBlockStore.cpp
     MinioS3Client.cpp
+    S3AdminClient.cpp
     S3BlockStore.cpp
     UploadDrainer.cpp
 )
@@ -21,6 +23,13 @@ target_link_libraries(sgns-blockstore
     # guard bans the include), so it reaches the export set only as a
     # LINK_ONLY entry.
     PRIVATE ipfs-lite-cpp::blake2
+    # cpp-httplib + nlohmann_json back the s3d admin facade
+    # (S3AdminClient.cpp, v1.1 Phase 10) and stay PRIVATE exactly like
+    # miniocpp/blake2: no installed header references either (the
+    # hygiene guard bans the includes), so they reach the export set
+    # only as LINK_ONLY entries.
+    PRIVATE httplib::httplib
+    PRIVATE nlohmann_json::nlohmann_json
 )
 
 target_include_directories(sgns-blockstore
