@@ -7,6 +7,7 @@
 #include <sgns-blockstore/LocalBlockStore.hpp>
 
 #include <filesystem>
+#include <algorithm>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -45,6 +46,48 @@ namespace sgns::blockstore
         // difference is the version encoding (V0 <-> V1), which the IPLD
         // spec defines as the same address.
         return true;
+    }
+
+    std::string DisposedRecord::Encode(const DisposedRecord& record)
+    {
+        // Fixed 26-byte LE layout (the declared codec contract).
+        std::string encoded(26, '\0');
+        auto put_u64 = [&encoded](size_t offset, uint64_t v) {
+            for (size_t i = 0; i < 8; ++i)
+            {
+                encoded[offset + i] = static_cast<char>((v >> (8 * i)) & 0xFF);
+            }
+        };
+        put_u64(0, record.disposed_at_unix_ms);
+        put_u64(8, record.reclaimed_bytes);
+        put_u64(16, record.original_size);
+        encoded[24] = static_cast<char>(record.reason);
+        encoded[25] = record.was_sealed ? '\x01' : '\0';
+        return encoded;
+    }
+
+    std::optional<DisposedRecord> DisposedRecord::Decode(const std::string& value)
+    {
+        if (value.size() != 26)
+        {
+            return std::nullopt;
+        }
+        DisposedRecord record;
+        auto get_u64 = [&value](size_t offset) {
+            uint64_t v = 0;
+            for (size_t i = 0; i < 8; ++i)
+            {
+                v |= static_cast<uint64_t>(static_cast<uint8_t>(value[offset + i]))
+                     << (8 * i);
+            }
+            return v;
+        };
+        record.disposed_at_unix_ms = get_u64(0);
+        record.reclaimed_bytes     = get_u64(8);
+        record.original_size       = get_u64(16);
+        record.reason              = static_cast<uint8_t>(value[24]);
+        record.was_sealed          = value[25] != '\0';
+        return record;
     }
 
     namespace
@@ -275,6 +318,8 @@ namespace sgns::blockstore
         rocksdb::ColumnFamilyHandle* journal_ = nullptr;
         /// v1.1 Phase 11 (D-01): the spill-timestamp side column family.
         rocksdb::ColumnFamilyHandle* spill_times_ = nullptr;
+        /// v1.1 Phase 11 (D-09): the disposed-CID marker column family.
+        rocksdb::ColumnFamilyHandle* disposed_ = nullptr;
         rocksdb::WriteOptions wo_;
         rocksdb::ReadOptions ro_;
     };
@@ -332,6 +377,9 @@ namespace sgns::blockstore
             // the descriptor here EXTENDS a pre-Phase-11 store in place
             // (A1) - no migration, no separate Open pass.
             {kSpillTimesColumnFamilyName, rocksdb::ColumnFamilyOptions()},
+            // v1.1 Phase 11 (D-09): the disposed-CID marker CF - same
+            // in-place extension posture.
+            {kDisposedColumnFamilyName, rocksdb::ColumnFamilyOptions()},
         };
 
         std::vector<rocksdb::ColumnFamilyHandle*> handles;
@@ -350,6 +398,7 @@ namespace sgns::blockstore
         store->impl_->blocks_ = handles[1];
         store->impl_->journal_ = handles[2];
         store->impl_->spill_times_ = handles[3];
+        store->impl_->disposed_ = handles[4];
         return store;
     }
 
@@ -363,9 +412,11 @@ namespace sgns::blockstore
         impl_->db_->DestroyColumnFamilyHandle(impl_->blocks_);
         impl_->db_->DestroyColumnFamilyHandle(impl_->journal_);
         impl_->db_->DestroyColumnFamilyHandle(impl_->spill_times_);
+        impl_->db_->DestroyColumnFamilyHandle(impl_->disposed_);
         impl_->blocks_ = nullptr;
         impl_->journal_ = nullptr;
         impl_->spill_times_ = nullptr;
+        impl_->disposed_ = nullptr;
         // Close does not fsync the WAL files - by design: the WAL is
         // exactly what reopen replays.
         const auto status = impl_->db_->Close();
@@ -814,6 +865,178 @@ namespace sgns::blockstore
                              "GetDurableWithSpillTime: journal scan failed");
         }
         return durable;
+    }
+
+    result<void, BlockStatus> LocalBlockStore::EvictLocalAndMarkDisposed(
+        const Cid& cid, const DisposedRecord& record)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        // D-16 HALF 1 (v1.1 Phase 11): the EvictLocal composition - ONE
+        // sync WriteBatch removes the block bytes, the journal record,
+        // AND the spill timestamp while writing the disposed marker:
+        // three Deletes + one Put, all-or-nothing (there is no mid-batch
+        // crash window). Idempotent by post-state (absent-key deletes
+        // succeed; the marker Put is last-writer-wins). NEVER touches
+        // any hot-store key (the two halves never share a store).
+        rocksdb::WriteBatch batch;
+        batch.Delete(impl_->blocks_, KeySlice(key.value()));
+        batch.Delete(impl_->journal_, KeySlice(key.value()));
+        batch.Delete(impl_->spill_times_, KeySlice(key.value()));
+        batch.Put(impl_->disposed_, KeySlice(key.value()),
+                  DisposedRecord::Encode(record));
+        const auto committed = impl_->db_->Write(impl_->wo_, &batch);
+        if (!committed.ok())
+        {
+            return MapStatus(committed,
+                             "EvictLocalAndMarkDisposed: commit failed");
+        }
+        return outcome::success();
+    }
+
+    result<bool, BlockStatus> LocalBlockStore::IsDisposed(const Cid& cid)
+    {
+        ValidateCidHash(cid);
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        auto key = MakeKey(cid);
+        if (!key)
+        {
+            return key.error();
+        }
+        std::string value;
+        const auto status = impl_->db_->Get(
+            impl_->ro_, impl_->disposed_, KeySlice(key.value()), &value);
+        if (status.IsNotFound())
+        {
+            return false; // clean absence is the VALUE false
+        }
+        if (!status.ok())
+        {
+            return MapStatus(status, "IsDisposed: read failed");
+        }
+        return true; // presence is the answer - the content is GetDisposed's
+    }
+
+    result<std::vector<std::pair<Cid, DisposedRecord>>, BlockStatus>
+    LocalBlockStore::GetDisposed()
+    {
+        // The GetUploadsInState iterator discipline: snapshot-consistent
+        // CF iterator, encoded-byte lexicographic order, undecodable
+        // values skipped, iterator status checked after the loop.
+        std::vector<std::pair<Cid, DisposedRecord>> markers;
+        std::unique_ptr<rocksdb::Iterator> it(
+            impl_->db_->NewIterator(impl_->ro_, impl_->disposed_));
+        for (it->SeekToFirst(); it->Valid(); it->Next())
+        {
+            auto record = DisposedRecord::Decode(std::string(
+                it->value().data(), it->value().size()));
+            if (!record)
+            {
+                continue; // undecodable value: skipped - audit surface
+            }
+            auto cid = libp2p::multi::ContentIdentifierCodec::decode(
+                gsl::span<const uint8_t>(
+                    reinterpret_cast<const uint8_t*>(it->key().data()),
+                    it->key().size()));
+            if (!cid)
+            {
+                continue;
+            }
+            markers.emplace_back(std::move(cid.value()), std::move(record.value()));
+        }
+        if (!it->status().ok())
+        {
+            return MapStatus(it->status(), "GetDisposed: scan failed");
+        }
+        return markers;
+    }
+
+    result<void, BlockStatus> LocalBlockStore::TrimDisposed(
+        size_t count_cap, uint64_t max_age_unix_ms)
+    {
+        if (auto gate = FaultGate(fault_))
+        {
+            return gate.value();
+        }
+        // Dual bound (D-10) in ONE batch: first collect the markers, then
+        // decide the drop set (age-expired entries, then oldest-first
+        // overflow beyond the cap), then delete in one sync Write.
+        auto markers = GetDisposed();
+        if (!markers.has_value())
+        {
+            return markers.error();
+        }
+        std::vector<const Cid*> drop;
+        for (const auto& [cid, record] : markers.value())
+        {
+            if (max_age_unix_ms != 0 && record.disposed_at_unix_ms < max_age_unix_ms)
+            {
+                drop.push_back(&cid);
+            }
+        }
+        if (count_cap != 0 && markers.value().size() > count_cap)
+        {
+            // markers arrive in encoded-byte order, NOT age order - sort
+            // indices by disposed_at to find the OLDEST overflow entries.
+            std::vector<size_t> by_age(markers.value().size());
+            for (size_t i = 0; i < by_age.size(); ++i)
+            {
+                by_age[i] = i;
+            }
+            std::sort(by_age.begin(), by_age.end(), [&](size_t a, size_t b) {
+                return markers.value()[a].second.disposed_at_unix_ms
+                     < markers.value()[b].second.disposed_at_unix_ms;
+            });
+            const size_t overflow = markers.value().size() - count_cap;
+            for (size_t i = 0; i < overflow && i < by_age.size(); ++i)
+            {
+                const Cid& candidate = markers.value()[by_age[i]].first;
+                bool already = false;
+                for (const Cid* d : drop)
+                {
+                    if (*d == candidate)
+                    {
+                        already = true;
+                        break;
+                    }
+                }
+                if (!already)
+                {
+                    drop.push_back(&candidate);
+                }
+            }
+        }
+        if (drop.empty())
+        {
+            return outcome::success(); // nothing to trim - no Write at all
+        }
+        rocksdb::WriteBatch batch;
+        for (const Cid* cid : drop)
+        {
+            auto key = MakeKey(*cid);
+            if (!key)
+            {
+                continue; // defensive: decode produced it, encode cannot fail
+            }
+            batch.Delete(impl_->disposed_, KeySlice(key.value()));
+        }
+        const auto committed = impl_->db_->Write(impl_->wo_, &batch);
+        if (!committed.ok())
+        {
+            return MapStatus(committed, "TrimDisposed: commit failed");
+        }
+        return outcome::success();
     }
 
     result<void, BlockStatus> LocalBlockStore::ForEach(

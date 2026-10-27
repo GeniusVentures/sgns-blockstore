@@ -7,7 +7,9 @@
 #define SGNS_BLOCKSTORE_LOCALBLOCKSTORE_HPP
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gsl/span>
@@ -35,6 +37,11 @@ namespace sgns::blockstore
     /// v1.1 Phase 11 D-01). Published so audit tooling and tests can
     /// address the store's column families.
     static constexpr const char* kSpillTimesColumnFamilyName = "spill_times";
+
+    /// Column-family name holding the disposed-CID markers
+    /// ("disposed_cids", v1.1 Phase 11 D-09/D-10). Published so audit
+    /// tooling and tests can address the store's column families.
+    static constexpr const char* kDisposedColumnFamilyName = "disposed_cids";
 
     /**
      * @brief The lifecycle state of a block's remote-upload journal record.
@@ -66,7 +73,35 @@ namespace sgns::blockstore
         Cid     cid;                   ///< the Durable journal record's CID
         uint64_t spilled_at_unix_ms{0}; ///< wall-clock unix-ms spill time (0 = absent)
     };
+    /**
+     * @brief The terminal disposed-CID marker record (D-09, v1.1
+     *        Phase 11).
+     *
+     * Written ONLY by EvictLocalAndMarkDisposed's single batch and read
+     * by IsDisposed/GetDisposed/TrimDisposed; the bounded re-delivery
+     * dedup state (D-10/D-11). was_sealed RECORDS the hot seal state at
+     * eviction for a future phase - NO v1.1 code path restores it
+     * (rehydrate stays bytes-only, Phase-9 SC4).
+     */
+    struct DisposedRecord
+    {
+        uint64_t disposed_at_unix_ms{0}; ///< wall-clock eviction time
+        uint64_t reclaimed_bytes{0};     ///< local bytes freed by the eviction
+        uint64_t original_size{0};       ///< the block's stored size at eviction
+        uint8_t reason{0};               ///< eviction reason code (policy-internal)
+        bool was_sealed{false};          ///< hot seal-marker state at eviction
 
+        /// Fixed-layout codec (26 bytes, little-endian): [u64 disposed_at]
+        /// [u64 reclaimed][u64 original_size][u8 reason][u8 was_sealed].
+        /// Library-owned: records are never assembled from caller strings.
+        static std::string Encode(const DisposedRecord& record);
+        static std::optional<DisposedRecord> Decode(const std::string& value);
+    };
+
+    /// Default disposed-marker count cap (D-10) for TrimDisposed.
+    static constexpr size_t kDefaultDisposedMarkerCap{100000};
+    /// Default disposed-marker max age (30 days in unix-ms, D-10).
+    static constexpr uint64_t kDefaultDisposedMarkerMaxAgeMs{2592000000ull};
     /**
      * @brief TEST-ONLY crash-point seam (D-07) - never read by
      *        production paths beyond the Put short-circuit.
@@ -328,6 +363,75 @@ namespace sgns::blockstore
          *         the mapped RocksDB scan failure
          */
         result<std::vector<SpillEntry>, BlockStatus> GetDurableWithSpillTime();
+
+        /**
+         * @brief The D-16 HALF-1 destructive primitive: remove this
+         *        store's local copy of a block AND record the terminal
+         *        disposed marker in ONE atomic WriteBatch (v1.1 Phase
+         *        11).
+         *
+         * ONE sync Write removes the block bytes, the journal record,
+         * AND the spill timestamp, and writes the disposed marker -
+         * three Deletes and one Put in a single all-or-nothing batch
+         * (the EvictLocal composition). Idempotent by post-state:
+         * deleting already-absent keys succeeds and the marker Put is
+         * last-writer-wins, so a replay over an already-evicted CID
+         * leaves exactly the same state. The caller owns the eviction
+         * policy (the durability gate lives ABOVE this primitive);
+         * the hot-store cleanup half NEVER runs here (the two halves
+         * never share a store - Pitfall 3).
+         *
+         * @warning extends EvictLocal's D-10 caveat: policy callers must
+         *          gate on EXACTLY UploadedDurable before evicting - this
+         *          primitive never consults durability itself.
+         * @param cid the block whose local state becomes "disposed"
+         * @param record the marker content (library codec, never caller
+         *        strings)
+         * @return success once the post-state (no local bytes, marker
+         *         present) holds
+         */
+        result<void, BlockStatus> EvictLocalAndMarkDisposed(const Cid& cid,
+                                                            const DisposedRecord& record);
+
+        /**
+         * @brief Disposed-marker point lookup (D-11).
+         * @param cid the block whose marker to check
+         * @return true when the marker exists; FALSE on absence AND on
+         *         any non-authoritative failure (the bool contract the
+         *         freeze-sensitive pubsub-path callers need - never
+         *         blocks, never throws)
+         */
+        result<bool, BlockStatus> IsDisposed(const Cid& cid);
+
+        /**
+         * @brief Enumerate the disposed markers (D-10, the trim +
+         *        orphan-re-scan source).
+         *
+         * Snapshot-consistent CF iterator, encoded-byte lexicographic
+         * order over the CID keys, undecodable values skipped - the
+         * GetUploadsInState discipline.
+         * @return the (CID, DisposedRecord) pairs in encoded-byte order,
+         *         or the mapped RocksDB scan failure
+         */
+        result<std::vector<std::pair<Cid, DisposedRecord>>, BlockStatus> GetDisposed();
+
+        /**
+         * @brief Enforce BOTH disposed-marker bounds in ONE batch
+         *        (D-10): drop entries older than max_age_unix_ms, then
+         *        oldest-first until at most count_cap remain (whichever
+         *        bound trims first; count_cap 0 or max_age 0 disables
+         *        that bound).
+         *
+         * A trimmed CID that re-arrives is re-learned through the
+         *        cold chain (re-journal -> re-spill -> re-drain; the
+         *        remote copy makes this safe).
+         * @param count_cap the maximum markers to keep (0 = no cap)
+         * @param max_age_unix_ms drop markers with disposed_at STRICTLY
+         *        BELOW this bound (0 = no age bound)
+         * @return success once the post-state holds
+         */
+        result<void, BlockStatus> TrimDisposed(size_t count_cap,
+                                               uint64_t max_age_unix_ms);
 
         /**
          * @brief Remove this store's LOCAL copy of a block, unconditionally
