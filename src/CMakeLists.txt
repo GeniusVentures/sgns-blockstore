@@ -30,6 +30,13 @@ target_link_libraries(sgns-blockstore
     # only as LINK_ONLY entries.
     PRIVATE httplib::httplib
     PRIVATE nlohmann_json::nlohmann_json
+    # Static libcrypto (via miniocpp) references dlopen/dlsym for provider
+    # loading; on glibc < 2.34 (AlmaLinux 8 CI) libdl is a separate library
+    # that no artifact config pulls onto the link line. CMAKE_DL_LIBS is
+    # CMake's portable idiom: "dl" exactly where needed, empty on
+    # Windows/macOS, harmless on glibc >= 2.34 (stub). Without it every
+    # test executable linking this library fails at link on EL8.
+    PRIVATE ${CMAKE_DL_LIBS}
 )
 
 target_include_directories(sgns-blockstore
