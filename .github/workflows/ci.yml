@@ -84,11 +84,12 @@ jobs:
       # MUST precede every bash step on the SG-WIN11 box (thirdparty
       # build.yml pattern): only Git\bin (bash.exe) - NOT Git\usr\bin, whose
       # trimmed MSYS2 perl shadows Strawberry Perl on that host. Explicit
-      # pwsh: the job-wide bash default would hit the very WSL hijack this
-      # step exists to prevent.
+      # `powershell` (NOT pwsh - that box has no PowerShell 7, and an
+      # explicit pwsh removes GitHub's automatic fallback; run 40753494652
+      # "pwsh: command not found").
       - name: Configure bash on Windows (use Git Bash, not WSL)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $gitBinPath = "C:\Program Files\Git\bin"
           if (Test-Path $gitBinPath) {
@@ -98,14 +99,12 @@ jobs:
           $bash = (Get-Command bash.exe -ErrorAction SilentlyContinue).Source
           Write-Output $(if ($bash) { "Bash location: $bash" } else { "WARNING: bash.exe not found in PATH" })
 
-      - name: Clean workspace (self-hosted runners)
-        working-directory: ${{ runner.workspace }}
-        run: |
-          # Container jobs leave root-owned files behind on Linux; Windows
-          # keeps stale build trees. Drop only what this workflow owns.
-          SUDO=$([ "$(uname)" = Linux ] && echo sudo || echo)
-          $SUDO rm -rf sgns-blockstore thirdparty || true
-          ls -la
+      # No workspace-clean step: actions/checkout deletes the checkout
+      # directory's contents every run (and this workflow's thirdparty/
+      # extraction lives INSIDE it), so nothing persists across runs. A
+      # rm -rf of the checkout dir itself broke every later step's process
+      # spawn - "error trying to start process ... with working directory"
+      # (run 40753494652, macOS + Linux legs).
 
       - name: Checkout sgns-blockstore (with cmaketemplate build submodule)
         uses: actions/checkout@v7
@@ -152,7 +151,7 @@ jobs:
       # observed 2026-09).
       - name: Configure Windows host
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: powershell
         run: |
           Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_BUILD_PARALLEL_LEVEL=8"
 
