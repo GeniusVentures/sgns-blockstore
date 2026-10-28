@@ -161,6 +161,9 @@ jobs:
       # ${THIRDPARTY_DIR}/../thirdparty/build/...); without it the template
       # falls into its self-download branch (develop-tag URL) and dies
       # extracting a 404 page - the macOS failure of run 40747127308.
+      # ZKLLVM_BUILD_DIR is defined EMPTY purely to skip the template's
+      # 578 MB zkLLVM release auto-fetch (run 40753860662 downloaded it on
+      # every leg) - nothing in this repo consumes zkLLVM.
       # cmake/CommonBuildParameters.cmake resolves the full dependency
       # closure from the artifact tree.
       - name: Configure sgns-blockstore
@@ -175,11 +178,16 @@ jobs:
             # CMake on Windows needs a native path, not the MSYS one.
             TP="$(cd thirdparty && pwd -W)"
           fi
+          # ABI subfolder matters: Linux artifacts install under
+          # build/Linux/<Type>/<abi> (run 40753860662 failed with the ABI
+          # part missing - Windows/OSX have empty abi and passed).
+          ABI_PART="${{ matrix.abi }}"
           cmake -S "build/${{ matrix.platform }}" -B build \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DTESTING=ON \
             -DTHIRDPARTY_DIR="$TP" \
-            -DTHIRDPARTY_BUILD_DIR="$TP/build/${{ matrix.platform }}/${BUILD_TYPE}" \
+            -DTHIRDPARTY_BUILD_DIR="$TP/build/${{ matrix.platform }}/${BUILD_TYPE}${ABI_PART:+/$ABI_PART}" \
+            -DZKLLVM_BUILD_DIR="" \
             "${GENERATOR_ARGS[@]}"
 
       - name: Build
