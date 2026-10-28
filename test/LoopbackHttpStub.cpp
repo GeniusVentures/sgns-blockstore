@@ -230,6 +230,18 @@ namespace sgns::blockstore::testsupport
         if (listen_socket_ != 0)
         {
             // Unblocks the blocking accept() inside the accept loop.
+            // POSIX close() alone does NOT wake a thread blocked in
+            // accept() (Linux leaves the syscall asleep; macOS/Windows
+            // happen to wake it) - Stop() then hangs forever in join()
+            // after the last stub-bearing test case, which wedged the
+            // whole Tier-1 lane on the Linux CI legs (run 40627475215,
+            // ~4h until cancelled). shutdown() on the listening socket
+            // reliably fails the blocked accept() with EINVAL on Linux
+            // and is harmless where it is unsupported.
+#ifndef _WIN32
+            shutdown(static_cast<SocketHandle>(listen_socket_),
+                     SHUT_RDWR);
+#endif
             CloseSocket(static_cast<SocketHandle>(listen_socket_));
             listen_socket_ = 0;
         }

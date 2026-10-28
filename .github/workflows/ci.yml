@@ -1,0 +1,207 @@
+name: sgns-blockstore CI
+
+# Test execution home for sgns-blockstore (user decision 2026-10-28): the
+# thirdparty superbuild workflow still COMPILES the test binaries on every
+# platform leg (compile coverage), but running them there proved too heavy -
+# one wedged test held four Linux legs ~4h. This CI builds the repo against
+# a thirdparty release artifact - exactly how SuperGenius consumes it - and
+# runs the hermetic Tier-1 lane with a hard per-test timeout so a hang can
+# never wedge a runner again.
+#
+# Requires repo secret GNUS_TOKEN_1 (PAT with read access to
+# GeniusVentures/thirdparty releases) - the job-scoped GITHUB_TOKEN cannot
+# download cross-repo release assets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      thirdparty_tag:
+        description: "thirdparty release tag to consume"
+        type: string
+        default: "test_coldstorage"
+      build_type:
+        description: "CMake build type"
+        type: choice
+        default: "Release"
+        options: [Release, Debug]
+
+permissions:
+  contents: read
+
+jobs:
+  resolve-runners:
+    runs-on: ubuntu-latest
+    outputs:
+      linux: ${{ steps.pick.outputs.linux }}
+      windows: ${{ steps.pick.outputs.windows }}
+      macos: ${{ steps.pick.outputs.macos }}
+    steps:
+      - name: Pick runners (self-hosted when available, hosted fallback)
+        id: pick
+        env:
+          GH_TOKEN: ${{ secrets.GNUS_TOKEN_1 }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ORG="${REPO%%/*}"
+          repo_data='{"runners":[]}'
+          org_data='{"runners":[]}'
+          repo_data="$(gh api "/repos/$REPO/actions/runners" --paginate 2>/dev/null || echo "$repo_data")"
+          org_data="$(gh api "/orgs/$ORG/actions/runners" --paginate 2>/dev/null || echo "$org_data")"
+          data="$(jq -n --argjson repo "$repo_data" --argjson org "$org_data" \
+            '{runners: (($repo.runners // []) + ($org.runners // []) | unique_by(.id))}')"
+
+          # Pick the self-hosted label array when at least one online runner
+          # carries the selector; otherwise fall back to a hosted image.
+          pick() { # $1=selector  $2=self-hosted json
+            if echo "$data" | jq -e \
+              '[.runners[]? | select(.status == "online")] | any(.labels[]?; .name == $s)' \
+              --arg s "$1" >/dev/null; then
+              echo "$2"
+            else
+              echo "$3"
+            fi
+          }
+          echo "linux=$(pick   sg-ubuntu-linux '["self-hosted","sg-ubuntu-linux"]' '["ubuntu-latest"]')"   >> "$GITHUB_OUTPUT"
+          echo "windows=$(pick SG-WIN11       '["self-hosted","SG-WIN11"]'               '["windows-latest"]')" >> "$GITHUB_OUTPUT"
+          echo "macos=$(pick   gv-OSX-Large   '["self-hosted","gv-OSX-Large"]'           '["macos-latest"]')"   >> "$GITHUB_OUTPUT"
+
+  build-and-test:
+    needs: resolve-runners
+    timeout-minutes: 45
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            target: Linux
+            id: Linux-x86_64
+            abi: x86_64
+            runs-on-key: linux
+            container: ghcr.io/geniusventures/almalinux-8:latest
+          - os: windows
+            target: Windows
+            id: Windows
+            abi: ""
+            runs-on-key: windows
+          - os: macos
+            target: OSX
+            id: OSX
+            abi: ""
+            runs-on-key: macos
+
+    runs-on: ${{ fromJson(needs.resolve-runners.outputs[matrix.runs-on-key]) }}
+    container: ${{ matrix.container }}
+
+    env:
+      GH_TOKEN: ${{ secrets.GNUS_TOKEN_1 }}
+      THIRDPARTY_TAG: ${{ inputs.thirdparty_tag || 'test_coldstorage' }}
+      BUILD_TYPE: ${{ inputs.build_type || 'Release' }}
+
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout sgns-blockstore
+        uses: actions/checkout@v7
+
+      - name: Download thirdparty release
+        run: |
+          set -euo pipefail
+          FILE_NAME="${{ matrix.id }}-${BUILD_TYPE}.tar.gz"
+          echo "asset: $FILE_NAME from tag $THIRDPARTY_TAG"
+          mkdir thirdparty && cd thirdparty
+          gh release download "$THIRDPARTY_TAG" --repo GeniusVentures/thirdparty -p "$FILE_NAME"
+          tar -zxf "$FILE_NAME"
+          # Tarball layout: build/<Platform>/<Type>[/<abi>]/<lib install tree>
+          ABI_PART="${{ matrix.abi }}"
+          TP="$PWD/build/${{ matrix.target }}/${BUILD_TYPE}${ABI_PART:+/$ABI_PART}"
+          if [ "${{ matrix.target }}" = "Windows" ]; then
+            # CMake on Windows needs a native path, not the MSYS one.
+            TP="$(pwd -W)/build/${{ matrix.target }}/${BUILD_TYPE}"
+          fi
+          echo "TP=$TP" >> "$GITHUB_ENV"
+
+      - name: Configure Linux host
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          # Match the toolchain the thirdparty artifact was built with
+          # (the AlmaLinux 8 CI image ships clang; EL8's default g++ 8.5
+          # cannot compile this tree).
+          sudo update-alternatives --install /usr/bin/cc cc "$(which clang)" 100
+          sudo update-alternatives --install /usr/bin/c++ c++ "$(which clang++)" 100
+          sudo update-alternatives --set cc "$(which clang)"
+          sudo update-alternatives --set c++ "$(which clang++)"
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+
+      - name: Configure macOS host
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja gnu-tar || true
+          if [ -d "/opt/homebrew/opt/gnu-tar/libexec/gnubin" ]; then
+            echo "PATH=/opt/homebrew/opt/gnu-tar/libexec/gnubin:$PATH" >> "$GITHUB_ENV"
+          fi
+          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+
+      - name: Configure sgns-blockstore
+        run: |
+          set -euo pipefail
+          # Prefix closure: every artifact top-level directory is an install
+          # root EXCEPT openssl (installs under openssl/build). Standalone
+          # configure keeps ZLIB in module mode (CMAKE_FIND_PACKAGE_PREFER_
+          # CONFIG defaults OFF without the superbuild's CommonCompilerOptions),
+          # so the artifact's httplibConfig never routes ZLIB through
+          # ZLIBConfig's @PACKAGE_INIT@ corruption path.
+          PREFIXES=""
+          for d in "$TP"/*/; do
+            d="${d%/}"
+            [ "$d" = "$TP/openssl" ] && continue
+            PREFIXES="${PREFIXES:+$PREFIXES;}$d"
+          done
+          PREFIXES="${PREFIXES:+$PREFIXES;}$TP/openssl/build"
+          echo "prefix closure:"
+          echo "$PREFIXES" | tr ';' '\n'
+
+          GENERATOR_ARGS=()
+          if [ "${{ matrix.target }}" = "Windows" ]; then
+            GENERATOR_ARGS=(-G "Visual Studio 17 2022")
+            if [ "$BUILD_TYPE" = "Debug" ]; then
+              GENERATOR_ARGS+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedDebug)
+            else
+              GENERATOR_ARGS+=(-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreadedRelease)
+            fi
+            GENERATOR_ARGS+=(-DBoost_USE_STATIC_RUNTIME=ON)
+          else
+            GENERATOR_ARGS=(-G Ninja)
+          fi
+
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DTESTING=ON \
+            -DCMAKE_PREFIX_PATH="$PREFIXES" \
+            -DGSL_INCLUDE_DIR="$TP/Microsoft.GSL/include" \
+            -Dhttplib_DIR="$TP/minio-cpp/lib/cmake/httplib" \
+            -Dminiocpp_DIR="$TP/minio-cpp/lib/cmake/miniocpp" \
+            -DBoost_NO_SYSTEM_PATHS=ON \
+            "${GENERATOR_ARGS[@]}"
+
+      - name: Build
+        env:
+          # Bounded parallelism: this tree's TU memory footprint is large,
+          # and self-hosted boxes have paid for over-parallel builds before.
+          CMAKE_BUILD_PARALLEL_LEVEL: 8
+        run: cmake --build build --config "$BUILD_TYPE" -j
+
+      # -L Tier1 fails closed (ctest -L never includes an unlabeled test) and
+      # --no-tests=error fails an empty selection, so a label typo cannot pass
+      # vacuously. --timeout 300 is the anti-wedge guard: a hung test fails
+      # in 5 minutes instead of holding the runner for hours.
+      - name: Run Tier-1 tests
+        run: ctest --test-dir build -C "$BUILD_TYPE" -L Tier1 --output-on-failure --no-tests=error --timeout 300
