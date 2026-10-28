@@ -126,14 +126,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           set -euo pipefail
-          # Match the toolchain the thirdparty artifact was built with: the
-          # AlmaLinux 8 CI image ships clang; EL8's default g++ 8.5 cannot
-          # compile this tree.
-          sudo update-alternatives --install /usr/bin/cc cc "$(which clang)" 100
-          sudo update-alternatives --install /usr/bin/c++ c++ "$(which clang++)" 100
-          sudo update-alternatives --set cc "$(which clang)"
-          sudo update-alternatives --set c++ "$(which clang++)"
-          echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
+          # EL8's default /usr/bin/c++ is g++ 8.5 (cannot compile this
+          # tree, and rejects clang-only flags like -gline-tables-only the
+          # template emits). update-alternatives CANNOT take /usr/bin/c++
+          # over in this container (it is a real file, not a symlink - the
+          # "failed to link" warnings of run 40754728681), so the compiler
+          # is pinned explicitly at configure below - the same posture as
+          # the thirdparty superbuild's own Linux configure.
+          if ! command -v clang >/dev/null 2>&1; then
+            echo "ERROR: clang not found in the EL8 CI image" >&2
+            exit 1
+          fi
+          echo "clang: $(clang --version | head -1)"
 
       - name: Configure macOS host
         if: runner.os == 'macOS'
@@ -182,6 +186,15 @@ jobs:
           # build/Linux/<Type>/<abi> (run 40753860662 failed with the ABI
           # part missing - Windows/OSX have empty abi and passed).
           ABI_PART="${{ matrix.abi }}"
+          # Pin clang on Linux (see Configure Linux host): CMake's default
+          # discovery lands on EL8's g++ 8.5 otherwise. Thirdparty's own
+          # Linux configure uses exactly these pins.
+          if [ "${{ matrix.os }}" = "linux" ]; then
+            GENERATOR_ARGS+=(
+              -DCMAKE_C_COMPILER="$(which clang)"
+              -DCMAKE_CXX_COMPILER="$(which clang++)"
+            )
+          fi
           cmake -S "build/${{ matrix.platform }}" -B build \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DTESTING=ON \
