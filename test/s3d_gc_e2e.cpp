@@ -185,7 +185,11 @@ namespace
     {
         const auto now = std::chrono::system_clock::to_time_t( std::chrono::system_clock::now() );
         std::tm tm_buffer{};
+#ifdef _WIN32
         localtime_s( &tm_buffer, &now );
+#else
+        localtime_r( &now, &tm_buffer );
+#endif
         std::ostringstream stream;
         stream << std::put_time( &tm_buffer, "%Y-%m-%dT%H:%M:%S" );
         return stream.str();

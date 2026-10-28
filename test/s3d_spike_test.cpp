@@ -144,7 +144,11 @@ namespace
         const auto now =
             std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         std::tm tm_buffer{};
+#ifdef _WIN32
         localtime_s(&tm_buffer, &now);
+#else
+        localtime_r(&now, &tm_buffer);
+#endif
         std::ostringstream stream;
         stream << "sgns-s3d-spike/" << std::put_time(&tm_buffer, "%Y%m%dT%H%M%S")
                << "-" << std::chrono::steady_clock::now().time_since_epoch().count();
