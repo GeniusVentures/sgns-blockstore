@@ -15,7 +15,7 @@ target_link_libraries(cid_spike_test
     p2p::p2p_cid
 )
 set_tests_properties(cid_spike_test PROPERTIES LABELS "Tier1")
-target_include_directories(memory_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
+target_include_directories(memory_block_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
 
 addtest(local_block_store_test local_block_store_test.cpp)
 target_link_libraries(local_block_store_test
@@ -23,14 +23,14 @@ target_link_libraries(local_block_store_test
     p2p::p2p_cid
 )
 set_tests_properties(local_block_store_test PROPERTIES LABELS "Tier1")
-target_include_directories(local_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
+target_include_directories(local_block_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
 
 # Crash suite (states 3/4 of the Phase-5 four-state matrix reach the
 # InMemoryS3Client fake - test-surface-only src/ privilege,
 # in_memory_s3_client_test precedent; the raw second-handle RocksDB
 # link was retired with the D-09 corrupt-after-commit hook).
 addtest(local_block_store_crash_test local_block_store_crash_test.cpp)
-target_include_directories(local_block_store_crash_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(local_block_store_crash_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(local_block_store_crash_test
     sgns-blockstore
     p2p::p2p_cid
@@ -82,7 +82,7 @@ set_tests_properties(minio_cpp_spike_test PROPERTIES LABELS "Tier1;Tier2")
 # the library's public include surface (D-04) - the test reaches them
 # directly, test-surface-only privilege (crash-suite precedent).
 addtest(in_memory_s3_client_test in_memory_s3_client_test.cpp)
-target_include_directories(in_memory_s3_client_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(in_memory_s3_client_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(in_memory_s3_client_test
     sgns-blockstore
     p2p::p2p_cid
@@ -99,7 +99,7 @@ addtest(s3_admin_client_test
     s3_admin_client_test.cpp
     LoopbackHttpStub.cpp
 )
-target_include_directories(s3_admin_client_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(s3_admin_client_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(s3_admin_client_test
     sgns-blockstore
     p2p::p2p_cid
@@ -113,8 +113,8 @@ set_tests_properties(s3_admin_client_test PROPERTIES LABELS "Tier1")
 # conformance kit + key-layout/idempotency probes over the fake. SDK-free
 # like every default-lane suite; src/ privilege reaches the fake.
 addtest(s3_block_store_test s3_block_store_test.cpp)
-target_include_directories(s3_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_include_directories(s3_block_store_test PRIVATE ${CMAKE_SOURCE_DIR}/test/conformance)
+target_include_directories(s3_block_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_include_directories(s3_block_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/conformance)
 target_link_libraries(s3_block_store_test
     sgns-blockstore
     p2p::p2p_cid
@@ -127,7 +127,7 @@ set_tests_properties(s3_block_store_test PROPERTIES LABELS "Tier1")
 # arrives transitively through the library); src/ privilege reaches the
 # fake.
 addtest(upload_drainer_test upload_drainer_test.cpp)
-target_include_directories(upload_drainer_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(upload_drainer_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(upload_drainer_test
     sgns-blockstore
     p2p::p2p_cid
@@ -142,7 +142,7 @@ addtest(minio_s3_client_test
     LoopbackHttpStub.cpp
     MinioServerHarness.cpp
 )
-target_include_directories(minio_s3_client_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(minio_s3_client_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(minio_s3_client_test
     sgns-blockstore
     p2p::p2p_cid
@@ -165,7 +165,7 @@ set_tests_properties(minio_s3_client_test PROPERTIES LABELS "Tier1;Tier2")
 # env vars unset both cases loud-skip [SGNS_BLOCKSTORE][S3D-TIER]
 # (runtime skip, TEST-01). Links the SDK for the raw wire-path probe.
 addtest(s3d_spike_test s3d_spike_test.cpp)
-target_include_directories(s3d_spike_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(s3d_spike_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(s3d_spike_test
     sgns-blockstore
     p2p::p2p_cid
@@ -188,7 +188,7 @@ addtest(s3_block_store_minio_test
     s3_block_store_minio_test.cpp
     MinioServerHarness.cpp
 )
-target_include_directories(s3_block_store_minio_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(s3_block_store_minio_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(s3_block_store_minio_test
     sgns-blockstore
     p2p::p2p_cid
@@ -211,7 +211,7 @@ set_tests_properties(s3_block_store_minio_test PROPERTIES LABELS "Tier2")
 # Dev-gated S3D-TIER (runtime skip, never CI); the binary only
 # connects - it never spawns or manages s3d (D-08).
 addtest(s3d_roundtrip_e2e s3d_roundtrip_e2e.cpp)
-target_include_directories(s3d_roundtrip_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(s3d_roundtrip_e2e PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(s3d_roundtrip_e2e
     sgns-blockstore
     p2p::p2p_cid
@@ -229,7 +229,7 @@ set_tests_properties(s3d_roundtrip_e2e PROPERTIES LABELS "Tier3")
 # flush-gated Durable -> evict -> CID-verified retrieval, two-run
 # fresh-process shape. TIER3 ONLY (env-gated loud skip; never CI).
 addtest(s3d_gc_e2e s3d_gc_e2e.cpp)
-target_include_directories(s3d_gc_e2e PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(s3d_gc_e2e PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(s3d_gc_e2e
     sgns-blockstore
     p2p::p2p_cid
@@ -250,7 +250,7 @@ addtest(gc_minio_roundtrip_test
     gc_minio_roundtrip_test.cpp
     MinioServerHarness.cpp
 )
-target_include_directories(gc_minio_roundtrip_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_include_directories(gc_minio_roundtrip_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_link_libraries(gc_minio_roundtrip_test
     sgns-blockstore
     p2p::p2p_cid
@@ -264,7 +264,7 @@ endif()
 set_tests_properties(gc_minio_roundtrip_test PROPERTIES LABELS "Tier2")
 
 add_test(NAME header_hygiene
-    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
+    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.. -P ${CMAKE_CURRENT_SOURCE_DIR}/header_hygiene_check.cmake)
 set_tests_properties(header_hygiene PROPERTIES LABELS "Tier1")
 
 # D-14 (Phase 5): self-inspecting Tier-1 audit - fixed-sleep + non-loopback
@@ -272,7 +272,7 @@ set_tests_properties(header_hygiene PROPERTIES LABELS "Tier1")
 # (a new unlabeled test trips the audit before CI can run it). Runs in
 # every ctest context, CI lane included - header_hygiene precedent.
 add_test(NAME tier1_static_audit
-    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_SOURCE_DIR} -P ${CMAKE_CURRENT_SOURCE_DIR}/tier1_audit_check.cmake)
+    COMMAND ${CMAKE_COMMAND} -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}/.. -P ${CMAKE_CURRENT_SOURCE_DIR}/tier1_audit_check.cmake)
 set_tests_properties(tier1_static_audit PROPERTIES LABELS "Tier1")
 
 # Phase 6 (LIB-02, D-08): out-of-tree install-tree consumer proof - a
