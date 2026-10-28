@@ -10,9 +10,12 @@ name: sgns-blockstore CI
 # wedge a runner again.
 #
 # Runners: strictly the org self-hosted fleet (user directive 2026-10-28) -
-# sg-ubuntu-linux (EL8 container), SG-WIN11, gv-OSX-Large. No hosted
-# fallback: if a label can't be served, the job queues visibly rather than
-# silently building elsewhere.
+# sg-ubuntu-linux (EL8 container), SG-WIN11, gv-OSX-Large. The Windows
+# self-hosted specifics mirror thirdparty build.yml / SuperGenius cmake.yml:
+# Git Bash must be put on PATH BEFORE any `shell: bash` step (SG-WIN11 has
+# a broken WSL whose bash.exe in System32 otherwise hijacks every bash step
+# - run 40747127308), and parallelism is capped (the box pages with 24 cl
+# instances).
 #
 # Requires org-scoped secret GNUS_TOKEN_1 (PAT reading GeniusVentures
 # thirdparty/cmaketemplate releases + repos) - the job GITHUB_TOKEN cannot
@@ -78,6 +81,32 @@ jobs:
         shell: bash
 
     steps:
+      # MUST precede every bash step on the SG-WIN11 box (thirdparty
+      # build.yml pattern): only Git\bin (bash.exe) - NOT Git\usr\bin, whose
+      # trimmed MSYS2 perl shadows Strawberry Perl on that host. Explicit
+      # pwsh: the job-wide bash default would hit the very WSL hijack this
+      # step exists to prevent.
+      - name: Configure bash on Windows (use Git Bash, not WSL)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $gitBinPath = "C:\Program Files\Git\bin"
+          if (Test-Path $gitBinPath) {
+            Add-Content -Path $env:GITHUB_PATH -Value $gitBinPath
+            $env:PATH = "$gitBinPath;$env:PATH"
+          }
+          $bash = (Get-Command bash.exe -ErrorAction SilentlyContinue).Source
+          Write-Output $(if ($bash) { "Bash location: $bash" } else { "WARNING: bash.exe not found in PATH" })
+
+      - name: Clean workspace (self-hosted runners)
+        working-directory: ${{ runner.workspace }}
+        run: |
+          # Container jobs leave root-owned files behind on Linux; Windows
+          # keeps stale build trees. Drop only what this workflow owns.
+          SUDO=$([ "$(uname)" = Linux ] && echo sudo || echo)
+          $SUDO rm -rf sgns-blockstore thirdparty || true
+          ls -la
+
       - name: Checkout sgns-blockstore (with cmaketemplate build submodule)
         uses: actions/checkout@v7
         with:
@@ -92,13 +121,7 @@ jobs:
           mkdir thirdparty && cd thirdparty
           gh release download "$THIRDPARTY_TAG" --repo GeniusVentures/thirdparty -p "$FILE_NAME"
           tar -zxf "$FILE_NAME"
-          ABI_PART="${{ matrix.abi }}"
-          TP="$PWD/build/${{ matrix.platform }}/${BUILD_TYPE}${ABI_PART:+/$ABI_PART}"
-          if [ "${{ matrix.platform }}" = "Windows" ]; then
-            # CMake on Windows needs a native path, not the MSYS one.
-            TP="$(pwd -W)/build/${{ matrix.platform }}/${BUILD_TYPE}"
-          fi
-          echo "TP=$TP" >> "$GITHUB_ENV"
+          ls "build/${{ matrix.platform }}"
 
       - name: Configure Linux host
         if: runner.os == 'Linux'
@@ -122,11 +145,25 @@ jobs:
           fi
           echo "CMAKE_GENERATOR=Ninja" >> "$GITHUB_ENV"
 
-      # cmaketemplate entry (GeniusSDK pattern): cmake/CommonBuildParameters.cmake
-      # resolves the full dependency closure from THIRDPARTY_BUILD_DIR. Windows
-      # uses the default VS generator (matches the thirdparty superbuild itself
-      # on the same runner); the template pins the MT/MTd runtime to match the
-      # artifact's static-runtime libraries.
+      # Windows: the VS generator discovers the MSVC toolchain itself (same
+      # posture as the thirdparty superbuild's own Windows leg on this box);
+      # no vcvars/Ninja export needed. Cap compiler concurrency - the bare
+      # -j below honours this env cap (SG-WIN11 pages with 24 cl instances,
+      # observed 2026-09).
+      - name: Configure Windows host
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_ENV -Value "CMAKE_BUILD_PARALLEL_LEVEL=8"
+
+      # cmaketemplate entry (GeniusSDK pattern). THIRDPARTY_DIR is set
+      # EXPLICITLY so CommonCompilerOptions.cmake's thirdparty guard sees the
+      # extracted artifact (its own check looks at
+      # ${THIRDPARTY_DIR}/../thirdparty/build/...); without it the template
+      # falls into its self-download branch (develop-tag URL) and dies
+      # extracting a 404 page - the macOS failure of run 40747127308.
+      # cmake/CommonBuildParameters.cmake resolves the full dependency
+      # closure from the artifact tree.
       - name: Configure sgns-blockstore
         run: |
           set -euo pipefail
@@ -134,16 +171,20 @@ jobs:
           if [ "${{ matrix.platform }}" != "Windows" ]; then
             GENERATOR_ARGS=(-G Ninja)
           fi
+          TP="$GITHUB_WORKSPACE/thirdparty"
+          if [ "${{ matrix.platform }}" = "Windows" ]; then
+            # CMake on Windows needs a native path, not the MSYS one.
+            TP="$(cd thirdparty && pwd -W)"
+          fi
           cmake -S "build/${{ matrix.platform }}" -B build \
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DTESTING=ON \
-            -DTHIRDPARTY_BUILD_DIR="$TP" \
+            -DTHIRDPARTY_DIR="$TP" \
+            -DTHIRDPARTY_BUILD_DIR="$TP/build/${{ matrix.platform }}/${BUILD_TYPE}" \
             "${GENERATOR_ARGS[@]}"
 
       - name: Build
         env:
-          # Bounded parallelism: this tree's TU memory footprint is large,
-          # and self-hosted boxes have paid for over-parallel builds before.
           CMAKE_BUILD_PARALLEL_LEVEL: 8
         run: cmake --build build --config "$BUILD_TYPE" -j
 
