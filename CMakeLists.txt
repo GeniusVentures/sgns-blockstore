@@ -67,6 +67,19 @@ install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/"
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     FILES_MATCHING PATTERN "*.hpp")
 
+# Install the test-fake headers (TEST-02 SC4, v1.1 Phase 12 plan 12-03,
+# user ruling 2026-10-28): InMemoryS3Client / InMemoryS3AdminClient are
+# compiled INTO the library (src/CMakeLists.txt add_library list) and
+# their ONLY non-std includes are installed public headers
+# (S3Client.hpp / S3AdminClient.hpp) - no PRIVATE dependency leaks, so
+# they are installable as-is. SuperGenius's cold-storage suites consume
+# them from the install tree like every other library header; a fresh
+# clone no longer needs the source tree (the release tarball carried
+# include/ and lib/ only, which made every cold suite un-compilable in
+# CI - the 12-03 research finding 8 landmine).
+install(FILES src/InMemoryS3Client.hpp src/InMemoryS3AdminClient.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/sgns-blockstore")
+
 # Install LIB
 install(TARGETS sgns-blockstore
     EXPORT sgns-blockstoreTargets
